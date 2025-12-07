@@ -11,7 +11,6 @@ from IPython.display import display
 
 from .config import Config
 from .data_loader import DataLoader
-from .feature_extraction import FeatureExtractor, get_or_extract_features
 from .preprocessing import DataPreprocessor
 from .model import TrafficCongestionModel
 from .visualization import Visualizer
