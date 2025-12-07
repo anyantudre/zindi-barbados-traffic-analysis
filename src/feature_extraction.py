@@ -115,13 +115,14 @@ class FlowExtractor:
 # =============================================================================
 
 class YOLOExtractor:
-    """Extract vehicle detection features using YOLOv8."""
+    """Extract vehicle detection features using YOLOv8 with batching."""
     
     VEHICLE_CLASSES = {"car", "truck", "bus", "motorcycle"}
     
-    def __init__(self, sample_interval: int = 15, device: str = "cuda"):
+    def __init__(self, sample_interval: int = 15, device: str = "cuda", batch_size: int = 16):
         self.sample_interval = sample_interval
         self.device = device
+        self.batch_size = batch_size
         self.model = None
     
     def _load_model(self):
@@ -131,21 +132,37 @@ class YOLOExtractor:
             self.model.to(self.device)
     
     def extract(self, video_path: str) -> Dict:
-        """Extract YOLO features from a single video."""
+        """Extract YOLO features from a single video using batch inference."""
         self._load_model()
         
+        # Collect frames
         cap = cv2.VideoCapture(video_path)
+        frames = []
         frame_idx = 0
-        vehicle_counts, bbox_areas = [], []
-        vehicle_types = {k: 0 for k in self.VEHICLE_CLASSES}
         
         while True:
             ret, frame = cap.read()
             if not ret:
                 break
-            
             if frame_idx % self.sample_interval == 0:
-                result = self.model(frame, verbose=False)[0]
+                frames.append(frame)
+            frame_idx += 1
+        cap.release()
+        
+        if not frames:
+            return {"video_path": video_path, "vehicle_count_mean": 0, "vehicle_count_std": 0,
+                    "vehicle_count_max": 0, "avg_bbox_area": 0,
+                    **{f"{k}_count": 0 for k in self.VEHICLE_CLASSES}}
+        
+        # Batch inference
+        vehicle_counts, bbox_areas = [], []
+        vehicle_types = {k: 0 for k in self.VEHICLE_CLASSES}
+        
+        for i in range(0, len(frames), self.batch_size):
+            batch = frames[i:i + self.batch_size]
+            results = self.model(batch, verbose=False)
+            
+            for result in results:
                 count = 0
                 for box in result.boxes:
                     name = result.names[int(box.cls)]
@@ -155,31 +172,28 @@ class YOLOExtractor:
                         xyxy = box.xyxy.cpu().numpy()[0]
                         bbox_areas.append((xyxy[2] - xyxy[0]) * (xyxy[3] - xyxy[1]))
                 vehicle_counts.append(count)
-            
-            frame_idx += 1
-        
-        cap.release()
         
         return {
             "video_path": video_path,
-            "vehicle_count_mean": np.mean(vehicle_counts) if vehicle_counts else 0,
-            "vehicle_count_std": np.std(vehicle_counts) if vehicle_counts else 0,
-            "vehicle_count_max": np.max(vehicle_counts) if vehicle_counts else 0,
+            "vehicle_count_mean": np.mean(vehicle_counts),
+            "vehicle_count_std": np.std(vehicle_counts),
+            "vehicle_count_max": np.max(vehicle_counts),
             "avg_bbox_area": np.mean(bbox_areas) if bbox_areas else 0,
             **{f"{k}_count": v for k, v in vehicle_types.items()}
         }
 
 
 class EmbeddingExtractor:
-    """Extract scene embeddings using EfficientNet-B0."""
+    """Extract scene embeddings using EfficientNet-B0 with batching."""
     
-    def __init__(self, sample_interval: int = 15, device: str = "cuda", n_components: int = 64):
+    def __init__(self, sample_interval: int = 15, device: str = "cuda", 
+                 n_components: int = 64, batch_size: int = 32):
         self.sample_interval = sample_interval
         self.device = device
         self.n_components = n_components
+        self.batch_size = batch_size
         self.model = None
         self.preprocess = None
-        self._embeddings = []
     
     def _load_model(self):
         if self.model is None:
@@ -195,44 +209,45 @@ class EmbeddingExtractor:
                 transforms.Resize((224, 224)),
                 transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
             ])
-            self.model.avgpool.register_forward_hook(self._hook)
-    
-    def _hook(self, module, input, output):
-        self._embeddings.append(output.detach().cpu().numpy().squeeze())
     
     def extract(self, video_path: str) -> Dict:
-        """Extract embedding features from a single video."""
+        """Extract embedding features using batch inference."""
         import torch
         self._load_model()
         
+        # Collect frames
         cap = cv2.VideoCapture(video_path)
+        frames = []
         frame_idx = 0
-        embeddings = []
         
         while True:
             ret, frame = cap.read()
             if not ret:
                 break
-            
             if frame_idx % self.sample_interval == 0:
-                self._embeddings.clear()
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                inp = self.preprocess(frame_rgb).unsqueeze(0).to(self.device)
-                with torch.no_grad():
-                    _ = self.model(inp)
-                embeddings.append(self._embeddings[0])
-            
+                frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
             frame_idx += 1
-        
         cap.release()
         
         n = self.n_components
-        if not embeddings:
-            return {"video_path": video_path, 
+        if not frames:
+            return {"video_path": video_path,
                     **{f"emb_mean_{i}": 0.0 for i in range(n)},
                     **{f"emb_std_{i}": 0.0 for i in range(n)}}
         
-        emb = np.stack(embeddings)[:, :n]
+        # Batch inference
+        all_embs = []
+        for i in range(0, len(frames), self.batch_size):
+            batch = frames[i:i + self.batch_size]
+            batch_tensor = torch.stack([self.preprocess(f) for f in batch]).to(self.device)
+            
+            with torch.no_grad():
+                out = self.model.features(batch_tensor)
+                out = self.model.avgpool(out)
+                embs = out.squeeze(-1).squeeze(-1).cpu().numpy()
+            all_embs.append(embs)
+        
+        emb = np.vstack(all_embs)[:, :n]
         return {
             "video_path": video_path,
             **{f"emb_mean_{i}": emb[:, i].mean() for i in range(n)},
