@@ -115,14 +115,13 @@ class FlowExtractor:
 # =============================================================================
 
 class YOLOExtractor:
-    """Extract vehicle detection features using YOLOv8 with batching."""
+    """Extract vehicle detection features using YOLOv8 native video streaming."""
     
     VEHICLE_CLASSES = {"car", "truck", "bus", "motorcycle"}
     
-    def __init__(self, sample_interval: int = 15, device: str = "cuda", batch_size: int = 16):
+    def __init__(self, sample_interval: int = 15, device: str = "cuda"):
         self.sample_interval = sample_interval
         self.device = device
-        self.batch_size = batch_size
         self.model = None
     
     def _load_model(self):
@@ -132,46 +131,35 @@ class YOLOExtractor:
             self.model.to(self.device)
     
     def extract(self, video_path: str) -> Dict:
-        """Extract YOLO features from a single video using batch inference."""
+        """Extract YOLO features using native video streaming (GPU optimized)."""
         self._load_model()
         
-        # Collect frames
-        cap = cv2.VideoCapture(video_path)
-        frames = []
-        frame_idx = 0
-        
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            if frame_idx % self.sample_interval == 0:
-                frames.append(frame)
-            frame_idx += 1
-        cap.release()
-        
-        if not frames:
-            return {"video_path": video_path, "vehicle_count_mean": 0, "vehicle_count_std": 0,
-                    "vehicle_count_max": 0, "avg_bbox_area": 0,
-                    **{f"{k}_count": 0 for k in self.VEHICLE_CLASSES}}
-        
-        # Batch inference
         vehicle_counts, bbox_areas = [], []
         vehicle_types = {k: 0 for k in self.VEHICLE_CLASSES}
         
-        for i in range(0, len(frames), self.batch_size):
-            batch = frames[i:i + self.batch_size]
-            results = self.model(batch, verbose=False)
-            
-            for result in results:
-                count = 0
-                for box in result.boxes:
-                    name = result.names[int(box.cls)]
-                    if name in self.VEHICLE_CLASSES:
-                        count += 1
-                        vehicle_types[name] += 1
-                        xyxy = box.xyxy.cpu().numpy()[0]
-                        bbox_areas.append((xyxy[2] - xyxy[0]) * (xyxy[3] - xyxy[1]))
-                vehicle_counts.append(count)
+        # Use YOLO's native video streaming - much faster
+        results = self.model.predict(
+            source=video_path,
+            stream=True,
+            verbose=False,
+            vid_stride=self.sample_interval  # Skip frames natively
+        )
+        
+        for result in results:
+            count = 0
+            for box in result.boxes:
+                name = result.names[int(box.cls)]
+                if name in self.VEHICLE_CLASSES:
+                    count += 1
+                    vehicle_types[name] += 1
+                    xyxy = box.xyxy.cpu().numpy()[0]
+                    bbox_areas.append((xyxy[2] - xyxy[0]) * (xyxy[3] - xyxy[1]))
+            vehicle_counts.append(count)
+        
+        if not vehicle_counts:
+            return {"video_path": video_path, "vehicle_count_mean": 0, "vehicle_count_std": 0,
+                    "vehicle_count_max": 0, "avg_bbox_area": 0,
+                    **{f"{k}_count": 0 for k in self.VEHICLE_CLASSES}}
         
         return {
             "video_path": video_path,
