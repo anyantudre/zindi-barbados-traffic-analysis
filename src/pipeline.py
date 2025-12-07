@@ -50,6 +50,8 @@ class TrainingPipeline:
             self
         """
         self.config.setup_environment()
+        # Update feature columns based on active flags
+        self.config.FEATURES_COLS = self.config.get_features_cols()
         return self
     
     def load_data(self) -> 'TrainingPipeline':

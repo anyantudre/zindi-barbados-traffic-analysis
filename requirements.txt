@@ -7,4 +7,8 @@ seaborn
 tqdm
 kagglehub
 joblib
+# Semantic feature extraction (optional - for GPU)
+ultralytics
+torch
+torchvision
 

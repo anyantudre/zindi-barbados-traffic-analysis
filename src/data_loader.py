@@ -123,6 +123,8 @@ class DataLoader:
         Returns:
             Tuple of (videos_df, train_df, test_df, features_df)
         """
+        from .feature_extraction import get_all_features
+        
         # Build video paths dataframe
         paths_dict = self.config.get_paths_dict()
         videos_df = self.build_dataframe(paths_dict)
@@ -130,8 +132,9 @@ class DataLoader:
         # Load CSVs
         train, test, _ = self.load_train_test_data()
         
-        # Load features
-        features = self.load_features()
+        # Load/extract all enabled features
+        video_paths = videos_df['video_path'].tolist() if len(videos_df) > 0 else []
+        features = get_all_features(self.config, video_paths)
         
         return videos_df, train, test, features
     

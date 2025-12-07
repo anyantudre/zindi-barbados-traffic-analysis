@@ -11,11 +11,17 @@ import seaborn as sns
 class Config:
     """Configuration class for the traffic analysis pipeline."""
     
-    # Feature extraction flag
-    EXTRACT_FEATURES: bool = False
+    # Feature extraction flags (True = extract, False = load from CSV)
+    EXTRACT_SIMPLE: bool = False     # Simple features (brightness, colors)
+    EXTRACT_YOLO: bool = False       # YOLO vehicle detection features
+    EXTRACT_FLOW: bool = False       # Optical flow features
+    EXTRACT_EMBEDDINGS: bool = False # EfficientNet embeddings
     
     # Use full (uncompressed) dataset or compressed
     USE_FULL: bool = False
+    
+    # Device for GPU models
+    DEVICE: str = "cuda"
     
     # Paths for compressed datasets
     COMPRESSED_PATHS_DICT: dict = {
@@ -46,14 +52,53 @@ class Config:
     TRAIN_CSV_PATH: str = "/kaggle/input/normanniles1-barbados-traffic/Train.csv"
     TEST_CSV_PATH: str = "/kaggle/input/normanniles1-barbados-traffic/TestInputSegments.csv"
     SAMPLE_SUBMISSION_PATH: str = "/kaggle/input/normanniles1-barbados-traffic/SampleSubmission.csv"
-    FEATURES_CSV_PATH: str = "/kaggle/input/simple-features-for-traffic-analysis/simple_features.csv"
     
-    # Column definitions
-    FEATURES_COLS: list = [
-        'signaling', 'day_week', 'hour',
+    # Feature CSV paths (Kaggle datasets or local). Set to None to disable.
+    SIMPLE_FEATURES_PATH: str = "/kaggle/input/simple-features-for-traffic-analysis/simple_features.csv"
+    YOLO_FEATURES_PATH: str = None  # e.g. "/kaggle/input/yolo-features-traffic/yolo_features.csv"
+    FLOW_FEATURES_PATH: str = None  # e.g. "/kaggle/input/flow-features-traffic/flow_features.csv"
+    EMBEDDING_FEATURES_PATH: str = None  # e.g. "/kaggle/input/embedding-features-traffic/embedding_features.csv"
+    
+    # Column definitions - Temporal features (from preprocessing)
+    TEMPORAL_FEATURES: list = ['signaling', 'day_week', 'hour']
+    
+    # Simple video features
+    SIMPLE_FEATURES: list = [
         'num_frames_sampled', 'mean_r', 'mean_g', 'mean_b', 
         'std_r', 'std_g', 'std_b', 'brightness'
     ]
+    
+    # YOLO features
+    YOLO_FEATURES: list = [
+        'vehicle_count_mean', 'vehicle_count_std', 'vehicle_count_max',
+        'avg_bbox_area', 'car_count', 'truck_count', 'bus_count', 'motorcycle_count'
+    ]
+    
+    # Optical flow features
+    FLOW_FEATURES: list = [
+        'flow_mean', 'flow_std', 'flow_max', 'flow_angle_mean', 'flow_angle_std'
+    ]
+    
+    # Embedding dimension (first N components)
+    EMBEDDING_DIM: int = 64
+    
+    @classmethod
+    def get_features_cols(cls) -> list:
+        """Get active feature columns based on defined paths (path=None → disabled)."""
+        cols = cls.TEMPORAL_FEATURES.copy()
+        if cls.SIMPLE_FEATURES_PATH:
+            cols.extend(cls.SIMPLE_FEATURES)
+        if cls.YOLO_FEATURES_PATH:
+            cols.extend(cls.YOLO_FEATURES)
+        if cls.FLOW_FEATURES_PATH:
+            cols.extend(cls.FLOW_FEATURES)
+        if cls.EMBEDDING_FEATURES_PATH:
+            cols.extend([f'emb_mean_{i}' for i in range(cls.EMBEDDING_DIM)])
+            cols.extend([f'emb_std_{i}' for i in range(cls.EMBEDDING_DIM)])
+        return cols
+    
+    # Default features (updated dynamically in pipeline.setup())
+    FEATURES_COLS: list = TEMPORAL_FEATURES + SIMPLE_FEATURES
     
     LABELS_COLS: list = ['congestion_enter_rating', 'congestion_exit_rating']
     
