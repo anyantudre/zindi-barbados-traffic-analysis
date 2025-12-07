@@ -2,24 +2,25 @@
 Modular pipeline for the [Zindi Barbados Traffic Analysis Challenge](https://zindi.africa/competitions/barbados-traffic-analysis-challenge).
 
 ## Usage on Kaggle
+In the Kaggle notebook, you need to generate a PAT to be able to clone our GitHub repo since it is private:
 
-In your Kaggle notebook, run:
+#### Generate a Personal Access Token
+On GitHub:
+1. Settings
+1. Developer settings
+1. Personal access tokens
+1. Create Fine-grained token or Classic token
+1. Permissions required:
+    Contents: Read
 
-```python
-# Clone the repository
-!git clone https://github.com/anyantudre/barbados-traffic-analysis-challenge.git /kaggle/working/barbados-traffic-analysis-challenge
+Copy the token. Guard it like your passport and your dignity :)
 
-# Add to Python path
-import sys
-sys.path.insert(0, "/kaggle/working/barbados-traffic-analysis-challenge")
+#### Add a Kaggle secret
+On Kaggle, click on Adds-on then Secrets then create a new secret called GITHUB_PAT and paste your PAT.   
+Now you're good to execute the notebook.
 
-# Import modules
-from src.config import Config
-from src.pipeline import TrainingPipeline, InferencePipeline
-```
 
 ## Project Structure
-
 ```
 ├── src/
 │   ├── config.py             # Configuration and parameters
@@ -33,21 +34,3 @@ from src.pipeline import TrainingPipeline, InferencePipeline
 ├── requirements.txt
 └── README.md
 ```
-
-## Quick Start
-
-```python
-from src.config import Config
-from src.pipeline import TrainingPipeline, InferencePipeline
-
-# Train
-config = Config()
-pipeline = TrainingPipeline(config)
-pipeline.run()
-
-# Predict
-inference = InferencePipeline(config, model=pipeline.model)
-inference.prepare_test_data(pipeline.testing_df)
-inference.predict_and_save('submission.csv')
-```
-
