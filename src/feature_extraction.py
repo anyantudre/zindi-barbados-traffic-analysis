@@ -315,16 +315,28 @@ def get_all_features(config, video_paths: List[str] = None) -> pd.DataFrame:
         if cache_path is None:
             continue
         
-        # Check if we should process this feature type
+        # Check if file exists when not extracting
         if not extract_flag and not os.path.exists(cache_path):
+            print(f"Warning: {cache_path} not found, skipping {flag_name}")
             continue
         
         extractor = make_extractor()
         df = extract_features(extractor, video_paths or [], cache_path, extract_flag)
         
+        # Add video_id for robust merging (filename without path)
+        df['video_id'] = df['video_path'].apply(lambda x: os.path.basename(x))
+        
         if features is None:
             features = df
         else:
-            features = features.merge(df, on='video_path', how='left')
+            # Merge on video_id (filename) instead of full path
+            df_to_merge = df.drop(columns=['video_path'])
+            features = features.merge(df_to_merge, on='video_id', how='left')
+        
+        print(f"Loaded {path_name}: {len(df)} rows, {len(df.columns)} columns")
+    
+    # Remove helper column
+    if features is not None and 'video_id' in features.columns:
+        features = features.drop(columns=['video_id'])
     
     return features
