@@ -82,19 +82,18 @@ class Config:
     # Embedding dimension (first N components)
     EMBEDDING_DIM: int = 64
     
-    @classmethod
-    def get_features_cols(cls) -> list:
+    def get_features_cols(self) -> list:
         """Get active feature columns based on defined paths (path=None → disabled)."""
-        cols = cls.TEMPORAL_FEATURES.copy()
-        if cls.SIMPLE_FEATURES_PATH:
-            cols.extend(cls.SIMPLE_FEATURES)
-        if cls.YOLO_FEATURES_PATH:
-            cols.extend(cls.YOLO_FEATURES)
-        if cls.FLOW_FEATURES_PATH:
-            cols.extend(cls.FLOW_FEATURES)
-        if cls.EMBEDDING_FEATURES_PATH:
-            cols.extend([f'emb_mean_{i}' for i in range(cls.EMBEDDING_DIM)])
-            cols.extend([f'emb_std_{i}' for i in range(cls.EMBEDDING_DIM)])
+        cols = self.TEMPORAL_FEATURES.copy()
+        if self.SIMPLE_FEATURES_PATH:
+            cols.extend(self.SIMPLE_FEATURES)
+        if self.YOLO_FEATURES_PATH:
+            cols.extend(self.YOLO_FEATURES)
+        if self.FLOW_FEATURES_PATH:
+            cols.extend(self.FLOW_FEATURES)
+        if self.EMBEDDING_FEATURES_PATH:
+            cols.extend([f'emb_mean_{i}' for i in range(self.EMBEDDING_DIM)])
+            cols.extend([f'emb_std_{i}' for i in range(self.EMBEDDING_DIM)])
         return cols
     
     # Default features (updated dynamically in pipeline.setup())
