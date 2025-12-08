@@ -25,14 +25,15 @@ try:
         objective='multi:softmax',
         eval_metric='mlogloss',
         random_state=42,
-        learning_rate=0.03,
-        max_depth=10,
-        min_child_weight=13,
-        subsample=0.85,
-        colsample_bytree=0.68,
-        reg_alpha=0.05,
-        reg_lambda=0.006,
-        n_estimators=374,
+
+        **{
+            'learning_rate': 0.19227540215073882, 
+            'max_depth': 3, 'min_child_weight': 19, 
+            'subsample': 0.8527684825662769, 
+            'colsample_bytree': 0.9133703751855122, 
+            'reg_alpha': 0.03406409161937166, 'reg_lambda': 4.405288594138643, 
+            'n_estimators': 123
+        }
     )
 except ImportError:
     pass
@@ -44,16 +45,18 @@ try:
         verbose=-1,
         device='gpu',
         random_state=42,
-        num_leaves=61,
-        max_depth=14,
-        learning_rate=0.07,
-        n_estimators=324,
-        min_child_samples=59,
-        subsample=0.86,
-        colsample_bytree=0.80,
-        reg_alpha=9.3,
-        reg_lambda=0.004,
         class_weight='balanced',
+
+        **{
+            'num_leaves': 159, 'max_depth': 4, 
+            'learning_rate': 0.07201934773717454, 
+            'n_estimators': 332, 
+            'min_child_samples': 11, 
+            'subsample': 0.6724360662104916, 
+            'colsample_bytree': 0.9689043505892945, 
+            'reg_alpha': 2.7261162591155736, 
+            'reg_lambda': 5.16531384161136
+        }
     )
 except ImportError:
     pass
@@ -66,6 +69,15 @@ try:
         devices='0',
         random_state=42,
         auto_class_weights='Balanced',
+
+        **{
+            'depth': 9, 
+            'learning_rate': 0.022515921040338078, 
+            'iterations': 262, 
+            'l2_leaf_reg': 0.0002240008599075843, 
+            'bagging_temperature': 0.9243734060325552, 
+            'random_strength': 5.811210933306866
+        }
     )
 except ImportError:
     pass
