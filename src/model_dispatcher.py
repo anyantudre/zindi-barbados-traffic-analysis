@@ -81,7 +81,7 @@ try:
             'random_strength': 5.811210933306866
         }
     )
-    _BASE_ESTIMATORS.append(("catboost", MODELS["catboost"]))
+    #_BASE_ESTIMATORS.append(("catboost", MODELS["catboost"]))
 except ImportError:
     pass
 
