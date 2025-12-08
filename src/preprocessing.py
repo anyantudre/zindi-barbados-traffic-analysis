@@ -258,7 +258,7 @@ class DataPreprocessor:
         ]
         merged_df = merged_df.reset_index(drop=True)
         
-        Create shifted features
+        #Create shifted features
         shifted_df = self.create_shifted_features(
             merged_df, 
             self.config.FEATURES_COLS, 
