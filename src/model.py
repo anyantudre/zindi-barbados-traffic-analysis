@@ -7,33 +7,34 @@ import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import LabelEncoder
-from sklearn.metrics import classification_report
+from sklearn.model_selection import StratifiedKFold
+from sklearn.metrics import classification_report, f1_score, accuracy_score
+from sklearn.base import clone
 from typing import Dict, List, Tuple, Optional
 import joblib
 
 from .config import Config
+from .model_dispatcher import MODELS
 
 
 class TrafficCongestionModel:
     """Model for predicting traffic congestion levels."""
     
-    def __init__(self, config: Config = None, **model_params):
+    def __init__(self, config: Config = None, model_name: str = "random_forest"):
         """
         Initialize the model.
         
         Args:
             config: Configuration object.
-            **model_params: Additional parameters to pass to RandomForestClassifier.
+            model_name: Name of model from MODELS dispatcher.
         """
         self.config = config or Config()
-        
-        # Use config params as defaults, override with any passed params
-        params = {**self.config.MODEL_PARAMS, **model_params}
-        
-        self.model = RandomForestClassifier(**params)
+        self.model_name = model_name
+        self.model = clone(MODELS.get(model_name, MODELS["random_forest"]))
         self.label_encoder = LabelEncoder()
         self.is_fitted = False
         self.feature_names = None
+        self.cv_scores = []
     
     def fit(
         self, 
@@ -42,7 +43,7 @@ class TrafficCongestionModel:
         feature_cols: List[str] = None
     ) -> 'TrafficCongestionModel':
         """
-        Train the model.
+        Train the model on full data.
         
         Args:
             X_train: Training features.
@@ -53,14 +54,53 @@ class TrafficCongestionModel:
             self
         """
         self.feature_names = feature_cols or list(X_train.columns)
-        
-        # Encode labels
         y_encoded = self.label_encoder.fit_transform(y_train)
-        
-        # Train model
         self.model.fit(X_train[self.feature_names], y_encoded)
         self.is_fitted = True
+        return self
+    
+    def fit_cv(
+        self,
+        X: pd.DataFrame,
+        y: pd.Series,
+        feature_cols: List[str] = None,
+        n_splits: int = 5,
+        random_state: int = 42
+    ) -> 'TrafficCongestionModel':
+        """
+        Train with Stratified K-Fold cross-validation.
         
+        Args:
+            X: Features.
+            y: Labels.
+            feature_cols: Feature column names.
+            n_splits: Number of folds.
+            random_state: Random seed for reproducibility.
+            
+        Returns:
+            self (trained on full data after CV)
+        """
+        self.feature_names = feature_cols or list(X.columns)
+        y_encoded = self.label_encoder.fit_transform(y)
+        X_feat = X[self.feature_names].values
+        
+        skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+        self.cv_scores = []
+        
+        print(f"Training {self.model_name} with {n_splits}-fold Stratified CV...")
+        for fold, (train_idx, val_idx) in enumerate(skf.split(X_feat, y_encoded)):
+            model_fold = clone(self.model)
+            model_fold.fit(X_feat[train_idx], y_encoded[train_idx])
+            
+            score = model_fold.score(X_feat[val_idx], y_encoded[val_idx])
+            self.cv_scores.append(score)
+            print(f"  Fold {fold+1}: {score:.4f}")
+        
+        print(f"  Mean CV: {np.mean(self.cv_scores):.4f} (+/- {np.std(self.cv_scores):.4f})")
+        
+        # Final fit on all data
+        self.model.fit(X_feat, y_encoded)
+        self.is_fitted = True
         return self
     
     def predict(self, X: pd.DataFrame) -> np.ndarray:
@@ -113,19 +153,24 @@ class TrafficCongestionModel:
         self, 
         X_val: pd.DataFrame, 
         y_val: pd.Series
-    ) -> Tuple[np.ndarray, np.ndarray, str]:
+    ) -> Tuple[np.ndarray, np.ndarray, Dict]:
         """
-        Evaluate the model on validation data.
+        Evaluate using competition metric: 0.7*Macro-F1 + 0.3*Accuracy.
         
         Args:
             X_val: Validation features.
             y_val: Validation labels.
             
         Returns:
-            Tuple of (y_val_encoded, y_pred_encoded, classification_report_str)
+            Tuple of (y_val_encoded, y_pred_encoded, metrics_dict)
         """
         y_val_encoded = self.label_encoder.transform(y_val)
         y_pred_encoded = self.predict_encoded(X_val)
+        
+        # Competition metrics
+        macro_f1 = f1_score(y_val_encoded, y_pred_encoded, average='macro')
+        accuracy = accuracy_score(y_val_encoded, y_pred_encoded)
+        competition_score = 0.7 * macro_f1 + 0.3 * accuracy
         
         report = classification_report(
             y_val_encoded, 
@@ -133,19 +178,28 @@ class TrafficCongestionModel:
             target_names=self.label_encoder.classes_
         )
         
-        return y_val_encoded, y_pred_encoded, report
+        metrics = {
+            'macro_f1': macro_f1,
+            'accuracy': accuracy,
+            'competition_score': competition_score,
+            'report': report
+        }
+        
+        return y_val_encoded, y_pred_encoded, metrics
     
     def get_feature_importance(self) -> np.ndarray:
         """
         Get feature importances from the model.
         
         Returns:
-            Array of feature importances.
+            Array of feature importances (or None if not available).
         """
         if not self.is_fitted:
             raise ValueError("Model must be fitted to get feature importance.")
         
-        return self.model.feature_importances_
+        if hasattr(self.model, 'feature_importances_'):
+            return self.model.feature_importances_
+        return None
     
     def get_classes(self) -> np.ndarray:
         """

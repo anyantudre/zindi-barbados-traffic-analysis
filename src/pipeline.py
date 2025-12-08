@@ -84,30 +84,36 @@ class TrainingPipeline:
         print(f"Training: {len(self.training_df)}, Validation: {len(self.validation_df)}, Testing: {len(self.testing_df)}")
         return self
     
-    def train(self, **model_params) -> 'TrainingPipeline':
+    def train(self, model_name: str = "random_forest", use_cv: bool = False, 
+              n_splits: int = 5) -> 'TrainingPipeline':
         """
         Train the model.
         
         Args:
-            **model_params: Additional model parameters.
+            model_name: Name of model from MODELS dispatcher.
+            use_cv: Whether to use Stratified K-Fold CV.
+            n_splits: Number of CV folds.
             
         Returns:
             self
         """
-        print("Training model...")
-        
         X_train = self.training_df[self.config.FEATURES_COLS]
         y_train = self.training_df['congestion_rating']
         
-        self.model = TrafficCongestionModel(self.config, **model_params)
-        self.model.fit(X_train, y_train, self.config.FEATURES_COLS)
+        self.model = TrafficCongestionModel(self.config, model_name=model_name)
+        
+        if use_cv:
+            self.model.fit_cv(X_train, y_train, self.config.FEATURES_COLS, n_splits)
+        else:
+            print(f"Training {model_name}...")
+            self.model.fit(X_train, y_train, self.config.FEATURES_COLS)
         
         print("Model training complete!")
         return self
     
     def evaluate(self, show_plots: bool = True) -> Dict:
         """
-        Evaluate the model on validation data.
+        Evaluate using competition metric: 0.7*Macro-F1 + 0.3*Accuracy.
         
         Args:
             show_plots: Whether to display evaluation plots.
@@ -120,9 +126,18 @@ class TrainingPipeline:
         X_val = self.validation_df[self.config.FEATURES_COLS]
         y_val = self.validation_df['congestion_rating']
         
-        y_val_encoded, y_pred_encoded, report = self.model.evaluate(X_val, y_val)
+        y_val_encoded, y_pred_encoded, metrics = self.model.evaluate(X_val, y_val)
         
-        print(report)
+        # Display competition metrics
+        print(f"\n{'='*50}")
+        print(f"COMPETITION METRICS")
+        print(f"{'='*50}")
+        print(f"Macro-F1 (70%):      {metrics['macro_f1']:.4f}")
+        print(f"Accuracy (30%):      {metrics['accuracy']:.4f}")
+        print(f"{'='*50}")
+        print(f"COMPETITION SCORE:   {metrics['competition_score']:.4f}")
+        print(f"{'='*50}\n")
+        print(metrics['report'])
         
         if show_plots:
             # Confusion matrix
@@ -132,25 +147,26 @@ class TrainingPipeline:
                 self.model.get_classes()
             )
             
-            # Feature importance
-            self.visualizer.plot_feature_importance(
-                self.model.get_feature_importance(),
-                self.config.FEATURES_COLS
-            )
+            # Feature importance (if available)
+            feat_imp = self.model.get_feature_importance()
+            if feat_imp is not None:
+                self.visualizer.plot_feature_importance(
+                    feat_imp,
+                    self.config.FEATURES_COLS
+                )
         
-        return {
-            'y_true': y_val_encoded,
-            'y_pred': y_pred_encoded,
-            'report': report
-        }
+        return metrics
     
-    def run(self, show_plots: bool = True, **model_params) -> 'TrainingPipeline':
+    def run(self, model_name: str = "random_forest", use_cv: bool = False, 
+            n_splits: int = 5, show_plots: bool = True) -> 'TrainingPipeline':
         """
         Run the full training pipeline.
         
         Args:
+            model_name: Name of model from MODELS dispatcher.
+            use_cv: Whether to use Stratified K-Fold CV.
+            n_splits: Number of CV folds.
             show_plots: Whether to display evaluation plots.
-            **model_params: Additional model parameters.
             
         Returns:
             self
@@ -158,7 +174,7 @@ class TrainingPipeline:
         self.setup()
         self.load_data()
         self.preprocess()
-        self.train(**model_params)
+        self.train(model_name=model_name, use_cv=use_cv, n_splits=n_splits)
         self.evaluate(show_plots)
         return self
     

@@ -258,17 +258,17 @@ class DataPreprocessor:
         ]
         merged_df = merged_df.reset_index(drop=True)
         
-        # Create shifted features
-        # shifted_df = self.create_shifted_features(
-        #     merged_df, 
-        #     self.config.FEATURES_COLS, 
-        #     self.config.LAG_SHIFT
-        # )
+        Create shifted features
+        shifted_df = self.create_shifted_features(
+            merged_df, 
+            self.config.FEATURES_COLS, 
+            self.config.LAG_SHIFT
+        )
         
         # Split into train, validation, and test
-        training_df = merged_df[merged_df['cycle_phase'] == 'train']
-        validation_df = merged_df[merged_df['cycle_phase'] == 'test_input_15']
-        testing_df = merged_df[merged_df['cycle_phase'] == 'test_output_5']
+        training_df = shifted_df[shifted_df['cycle_phase'] == 'train']
+        validation_df = shifted_df[shifted_df['cycle_phase'] == 'test_input_15']
+        testing_df = shifted_df[shifted_df['cycle_phase'] == 'test_output_5']
         
         return training_df, validation_df, testing_df
 

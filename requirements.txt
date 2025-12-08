@@ -11,4 +11,8 @@ joblib
 ultralytics
 torch
 torchvision
+# ML models (optional)
+xgboost
+lightgbm
+catboost
 
