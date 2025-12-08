@@ -15,4 +15,5 @@ torchvision
 xgboost
 lightgbm
 catboost
+optuna
 
