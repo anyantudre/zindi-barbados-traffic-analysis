@@ -8,11 +8,12 @@ from sklearn.ensemble import RandomForestClassifier, VotingClassifier
 
 MODELS = {
     "random_forest": RandomForestClassifier(
-        n_estimators=200,
-        max_depth=None,
         random_state=42,
         class_weight='balanced',
-        n_jobs=-1
+        n_jobs=-1,
+
+        **{'n_estimators': 187, 'max_depth': 13, 'min_samples_split': 16, 'min_samples_leaf': 8, 'max_features': None}
+
     ),
 }
 
