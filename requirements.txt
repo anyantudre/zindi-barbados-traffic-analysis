@@ -16,4 +16,8 @@ xgboost
 lightgbm
 catboost
 optuna
+# Video transformers (optional)
+transformers
+pytorchvideo
+evaluate
 
