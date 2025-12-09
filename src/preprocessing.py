@@ -214,6 +214,9 @@ class DataPreprocessor:
         shifted_df['ID'] = merged_df['ID']
         shifted_df['cycle_phase'] = merged_df['cycle_phase']
         shifted_df['congestion_rating'] = merged_df['congestion_rating']
+        # Keep video_path for video transformer models
+        if 'video_path' in merged_df.columns:
+            shifted_df['video_path'] = merged_df['video_path']
         shifted_df = shifted_df.dropna(subset=features_cols)
         
         return shifted_df
