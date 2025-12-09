@@ -252,10 +252,10 @@ class DataPreprocessor:
         # Merge all data
         merged_df = pd.concat([long_df, ss])
         merged_df = merged_df.sort_values(by=['view_label', 'ID_type', 'time_segment_id'])
-        merged_df = merged_df[
-            self.config.ID_COLS + ['ID', 'cycle_phase', 'ID_type'] + 
-            ['congestion_rating'] + self.config.FEATURES_COLS
-        ]
+        # Keep video_path for video models
+        keep_cols = self.config.ID_COLS + ['ID', 'cycle_phase', 'ID_type', 'video_path'] + \
+                    ['congestion_rating'] + self.config.FEATURES_COLS
+        merged_df = merged_df[[c for c in keep_cols if c in merged_df.columns]]
         merged_df = merged_df.reset_index(drop=True)
         
         #Create shifted features

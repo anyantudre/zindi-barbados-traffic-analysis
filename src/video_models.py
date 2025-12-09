@@ -65,9 +65,10 @@ class VideoDataset(Dataset):
             while len(frames) < self.num_frames:
                 frames.append(frames[-1] if frames else np.zeros((224, 224, 3), dtype=np.uint8))
         
-        # Process frames
-        inputs = self.image_processor(frames, return_tensors="pt")
-        pixel_values = inputs["pixel_values"].squeeze(0)  # Remove batch dim
+        # Process frames - image_processor expects list of frames
+        inputs = self.image_processor(list(frames), return_tensors="pt")
+        # Shape: (1, num_frames, channels, height, width) -> remove batch dim
+        pixel_values = inputs["pixel_values"].squeeze(0)
         
         return {"pixel_values": pixel_values, "labels": label}
 
@@ -154,8 +155,9 @@ class VideoMAETrainer:
             return metric.compute(predictions=predictions, references=eval_pred.label_ids)
         
         def collate_fn(examples):
+            # Stack pixel_values: each is (num_frames, C, H, W)
             pixel_values = torch.stack([ex["pixel_values"] for ex in examples])
-            labels = torch.tensor([ex["labels"] for ex in examples])
+            labels = torch.tensor([ex["labels"] for ex in examples], dtype=torch.long)
             return {"pixel_values": pixel_values, "labels": labels}
         
         # Trainer
