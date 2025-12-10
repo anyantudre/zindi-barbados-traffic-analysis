@@ -243,8 +243,77 @@ class EmbeddingExtractor:
         }
 
 
+def _read_frames_pyav(video_path: str, num_frames: int = 16) -> List[np.ndarray]:
+    """Read frames using PyAV (10-20x faster than OpenCV for seeking)."""
+    try:
+        import av
+    except ImportError:
+        # Fallback to OpenCV if PyAV not available
+        return _read_frames_cv2(video_path, num_frames)
+    
+    try:
+        container = av.open(video_path)
+        stream = container.streams.video[0]
+        total_frames = stream.frames or int(stream.duration * stream.average_rate)
+        
+        if total_frames <= 0:
+            container.close()
+            return []
+        
+        indices = set(np.linspace(0, max(0, total_frames - 1), num_frames, dtype=int))
+        frames = []
+        
+        for i, frame in enumerate(container.decode(video=0)):
+            if i in indices:
+                frames.append(frame.to_rgb().to_ndarray())
+            if len(frames) >= num_frames:
+                break
+        
+        container.close()
+        
+        # Pad if needed
+        while len(frames) < num_frames:
+            frames.append(frames[-1] if frames else np.zeros((224, 224, 3), dtype=np.uint8))
+        
+        return frames[:num_frames]
+    except Exception:
+        return []
+
+
+def _read_frames_cv2(video_path: str, num_frames: int = 16) -> List[np.ndarray]:
+    """Fallback OpenCV reader."""
+    cap = cv2.VideoCapture(video_path)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    
+    if total_frames <= 0:
+        cap.release()
+        return []
+    
+    indices = np.linspace(0, total_frames - 1, num_frames, dtype=int)
+    frames = []
+    
+    for idx in indices:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+        ret, frame = cap.read()
+        if ret:
+            frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+    cap.release()
+    
+    while len(frames) < num_frames:
+        frames.append(frames[-1] if frames else np.zeros((224, 224, 3), dtype=np.uint8))
+    
+    return frames[:num_frames]
+
+
+def _read_video_task(args):
+    """Worker function for multiprocessing."""
+    i, path, num_frames = args
+    frames = _read_frames_pyav(path, num_frames)
+    return (i, frames) if frames else None
+
+
 class VideoMAEExtractor:
-    """Extract video embeddings using VideoMAE transformer with batch inference."""
+    """Extract video embeddings using VideoMAE transformer with optimized batch inference."""
     
     def __init__(self, device: str = "cuda", n_components: int = 64, 
                  num_frames: int = 16, batch_size: int = 16,
@@ -271,58 +340,26 @@ class VideoMAEExtractor:
             self.model.eval()
             print(f"VideoMAE model loaded on {self.device}")
     
-    def _read_frames(self, video_path: str) -> List[np.ndarray]:
-        """Read and uniformly sample frames from video."""
-        cap = cv2.VideoCapture(video_path)
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        
-        if total_frames <= 0:
-            cap.release()
-            return []
-        
-        indices = np.linspace(0, total_frames - 1, self.num_frames, dtype=int)
-        frames = []
-        
-        for idx in indices:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-            ret, frame = cap.read()
-            if ret:
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                frames.append(frame)
-        cap.release()
-        
-        while len(frames) < self.num_frames:
-            frames.append(frames[-1] if frames else np.zeros((224, 224, 3), dtype=np.uint8))
-        
-        return frames[:self.num_frames]
-    
     def _make_empty_result(self, video_path: str) -> Dict:
         """Create empty result for failed videos."""
         return {"video_path": video_path, **{f"vmae_{i}": 0.0 for i in range(self.n_components)}}
     
     def extract_batch(self, video_paths: List[str]) -> List[Dict]:
-        """Extract features from multiple videos using batch inference."""
+        """Extract features from multiple videos using optimized batch inference."""
         import torch
-        from concurrent.futures import ThreadPoolExecutor
+        from concurrent.futures import ProcessPoolExecutor
         self._load_model()
         
         n = self.n_components
-        results = []
         
-        # Read frames in parallel using threads (I/O bound)
-        valid_paths = [(i, p) for i, p in enumerate(video_paths) if os.path.exists(p)]
-        
-        def read_with_index(args):
-            i, path = args
-            frames = self._read_frames(path)
-            return (i, frames) if frames else None
+        # Read frames in parallel using multiprocessing (bypasses GIL)
+        valid_paths = [(i, p, self.num_frames) for i, p in enumerate(video_paths) if os.path.exists(p)]
         
         all_frames = []
         valid_indices = []
         
-        with ThreadPoolExecutor(max_workers=min(8, len(valid_paths))) as executor:
-            results_iter = executor.map(read_with_index, valid_paths)
-            for result in results_iter:
+        with ProcessPoolExecutor(max_workers=min(8, len(valid_paths))) as executor:
+            for result in executor.map(_read_video_task, valid_paths):
                 if result:
                     i, frames = result
                     all_frames.append(frames)
@@ -331,34 +368,29 @@ class VideoMAEExtractor:
         if not all_frames:
             return [self._make_empty_result(p) for p in video_paths]
         
-        # Process in batches
-        all_embeddings = []
-        for batch_start in range(0, len(all_frames), self.batch_size):
-            batch_frames = all_frames[batch_start:batch_start + self.batch_size]
-            
-            # Process each video's frames and stack into batch
-            batch_inputs = [self.processor(frames, return_tensors="pt")["pixel_values"] 
-                           for frames in batch_frames]
-            batch_tensor = torch.cat(batch_inputs, dim=0).to(self.device, dtype=torch.float16)
-            
-            with torch.no_grad(), torch.cuda.amp.autocast(enabled=self.device=="cuda"):
-                outputs = self.model(pixel_values=batch_tensor)
-                cls_emb = outputs.last_hidden_state[:, 0, :].float().cpu().numpy()
-                mean_emb = outputs.last_hidden_state.mean(dim=1).float().cpu().numpy()
-            
-            # Combine and truncate
-            for cls, mean in zip(cls_emb, mean_emb):
-                combined = np.concatenate([cls, mean])[:n]
-                if len(combined) < n:
-                    combined = np.pad(combined, (0, n - len(combined)))
-                all_embeddings.append(combined)
+        # Batch preprocessing - flatten all frames for single processor call
+        all_frames_flat = [f for frames in all_frames for f in frames]
+        processed = self.processor(all_frames_flat, return_tensors="pt")["pixel_values"]
         
-        # Build results for all paths
+        # Reshape: (N*num_frames, C, H, W) -> (N, num_frames, C, H, W)
+        batch_tensor = processed.view(len(all_frames), self.num_frames, *processed.shape[1:])
+        batch_tensor = batch_tensor.to(self.device, dtype=torch.float16)
+        
+        # GPU inference
+        with torch.no_grad():
+            outputs = self.model(pixel_values=batch_tensor)
+            cls_emb = outputs.last_hidden_state[:, 0, :].float().cpu().numpy()
+            mean_emb = outputs.last_hidden_state.mean(dim=1).float().cpu().numpy()
+        
+        # Combine and build results
+        results = []
         emb_idx = 0
         for i, path in enumerate(video_paths):
             if i in valid_indices:
-                emb = all_embeddings[emb_idx]
-                results.append({"video_path": path, **{f"vmae_{j}": float(emb[j]) for j in range(n)}})
+                combined = np.concatenate([cls_emb[emb_idx], mean_emb[emb_idx]])[:n]
+                if len(combined) < n:
+                    combined = np.pad(combined, (0, n - len(combined)))
+                results.append({"video_path": path, **{f"vmae_{j}": float(combined[j]) for j in range(n)}})
                 emb_idx += 1
             else:
                 results.append(self._make_empty_result(path))
