@@ -30,12 +30,12 @@ try:
         eval_metric='mlogloss',
         random_state=42,
         **{
-            'learning_rate': 0.19227540215073882, 
-            'max_depth': 3, 'min_child_weight': 19, 
-            'subsample': 0.8527684825662769, 
-            'colsample_bytree': 0.9133703751855122, 
-            'reg_alpha': 0.03406409161937166, 'reg_lambda': 4.405288594138643, 
-            'n_estimators': 123
+            'learning_rate': 0.01, 
+            'max_depth': 10, 'min_child_weight': 1, 
+            'subsample': 0.8, 
+            'colsample_bytree': 0.8, 
+            'reg_alpha': 0.01, 'reg_lambda': 0.01, 
+            'n_estimators': 500
         }
     )
     _BASE_ESTIMATORS.append(("xgb", MODELS["xgb"]))
