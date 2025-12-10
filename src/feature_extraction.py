@@ -11,6 +11,12 @@ import pandas as pd
 from tqdm import tqdm
 from typing import Dict, List
 
+import torch
+from concurrent.futures import ThreadPoolExecutor
+from PIL import Image
+
+import core.vision_encoder.pe as pe
+import core.vision_encoder.transforms as pe_transforms
 
 # =============================================================================
 # Base Extractors (CPU-only, lightweight)
@@ -404,6 +410,7 @@ class VideoMAEExtractor:
         return self.extract_batch([video_path])[0]
 
 
+
 class PerceptionEncoderExtractor:
     """
     Extract video embeddings using Meta Perception Encoder (PE smallest).
@@ -414,31 +421,29 @@ class PerceptionEncoderExtractor:
                  num_frames: int = 16,
                  n_components: int = 1024,
                  batch_size: int = 8,
-                 model_ckpt: str = "facebook/PE-Core-T16-384"):
+                 model_ckpt: str = "PE-Core-T16-384"):
         self.device = device
         self.num_frames = num_frames
         self.n_components = n_components
         self.batch_size = batch_size
         self.model_ckpt = model_ckpt
         self.model = None
-        self.processor = None
+        self.preprocess = None
 
     def _load_model(self):
         if self.model is None:
-            import torch
-            from transformers import PerceiverImageProcessor, PerceiverResamplerModel
-
-            self.processor = PerceiverImageProcessor.from_pretrained(self.model_ckpt)
-            self.model = PerceiverResamplerModel.from_pretrained(
+            # Load PE model (official)
+            self.model = pe.CLIP.from_config(
                 self.model_ckpt,
-                attn_implementation="sdpa",
-                torch_dtype=torch.float16
-            ).to(self.device)
+                pretrained=True
+            ).to(self.device).eval()
 
-            self.model.eval()
+            # Official image transform
+            self.preprocess = pe_transforms.get_image_transform(
+                self.model.image_size
+            )
 
     def _read_frames(self, video_path):
-        # Reuse your high-performance frame reader
         return _read_frames_pyav(video_path, self.num_frames)
 
     def _make_empty(self, video_path):
@@ -448,11 +453,8 @@ class PerceptionEncoderExtractor:
         }
 
     def extract_batch(self, video_paths):
-        import torch
         self._load_model()
 
-        # 1. Parallel frame reading
-        from concurrent.futures import ThreadPoolExecutor
         valid = [(i, p) for i, p in enumerate(video_paths) if os.path.exists(p)]
 
         def read_task(item):
@@ -473,23 +475,25 @@ class PerceptionEncoderExtractor:
         if not frames_list:
             return [self._make_empty(p) for p in video_paths]
 
-        # 2. Preprocess each video separately
-        inputs = []
+        # Preprocess each batch of frames
+        batch_tensors = []
         for frames in frames_list:
-            inp = self.processor(frames, return_tensors="pt")["pixel_values"]
-            inputs.append(inp)
+            imgs = [self.preprocess(Image.fromarray(f)) for f in frames]
+            t = torch.stack(imgs, dim=0)  # shape num_frames x C x H x W
+            batch_tensors.append(t.unsqueeze(0))  # add batch dim
 
-        tensor = torch.cat(inputs, dim=0).to(self.device, dtype=torch.float16)
+        # shape B x num_frames x C x H x W
+        tensor = torch.cat(batch_tensors, dim=0).to(self.device, dtype=torch.float16)
 
-        # 3. Forward pass (no backprop)
-        with torch.no_grad():
-            out = self.model(pixel_values=tensor)
-            emb = out.last_hidden_state.float().cpu().numpy()  # shape: B x D
+        with torch.no_grad(), torch.autocast(self.device):
+            # PE returns (image_features, text_features)
+            image_features, _ = self.model(tensor, None)
+            emb = image_features.float().cpu().numpy()
 
-        # 4. Reduce embedding length
+        # trim (just in case)
         emb = emb[:, :self.n_components]
 
-        # 5. Repack results
+        # Reassemble results
         res = []
         j = 0
         for i, p in enumerate(video_paths):
@@ -507,6 +511,7 @@ class PerceptionEncoderExtractor:
 
     def extract(self, video_path):
         return self.extract_batch([video_path])[0]
+
 
 
 # =============================================================================
