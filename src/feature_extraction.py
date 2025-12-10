@@ -266,7 +266,7 @@ class VideoMAEExtractor:
             self.model = VideoMAEModel.from_pretrained(
                 self.model_ckpt,
                 attn_implementation="sdpa",
-                torch_dtype=torch.bfloat16
+                torch_dtype=torch.float16
             )
             self.model.to(self.device).eval()
     
