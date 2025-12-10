@@ -92,7 +92,7 @@ class VideoDataset:
                     frames.append(np.zeros((224, 224, 3), dtype=np.uint8))
         
         inputs = self.image_processor(list(frames), return_tensors="pt")
-        pixel_values = inputs["pixel_values"].squeeze(0)
+        pixel_values = inputs["pixel_values"].squeeze(0).float()  # Ensure float32
         
         return {"pixel_values": pixel_values, "labels": label}
 
@@ -222,7 +222,7 @@ class VideoTransformerModel:
             return {"accuracy": acc, "macro_f1": f1, "competition_score": competition_score}
         
         def collate_fn(examples):
-            pixel_values = torch.stack([ex["pixel_values"] for ex in examples])
+            pixel_values = torch.stack([ex["pixel_values"] for ex in examples]).float()
             labels = torch.tensor([ex["labels"] for ex in examples], dtype=torch.long)
             return {"pixel_values": pixel_values, "labels": labels}
         
