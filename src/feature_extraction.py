@@ -475,35 +475,46 @@ class PerceptionEncoderExtractor:
         if not frames_list:
             return [self._make_empty(p) for p in video_paths]
 
-        # Preprocess each batch of frames
-        batch_tensors = []
+        # Prétraitement des frames (sortie : liste de tenseurs 4D num_frames x C x H x W)
+        vid_tensors = []
+        vid_indices = []
+        frame_counts = []
         for frames in frames_list:
             imgs = [self.preprocess(Image.fromarray(f)) for f in frames]
-            t = torch.stack(imgs, dim=0)  # shape num_frames x C x H x W
-            batch_tensors.append(t.unsqueeze(0))  # add batch dim
+            t = torch.stack(imgs, dim=0)  # num_frames x C x H x W
+            vid_tensors.append(t)
+            vid_indices.append(indices[len(vid_indices)])
+            frame_counts.append(t.shape[0])
 
-        # shape B x num_frames x C x H x W
-        tensor = torch.cat(batch_tensors, dim=0).to(self.device, dtype=torch.float16)
+        # Empile toutes les frames des vidéos dans le batch (4D) attendu par le modèle
+        tensor = torch.cat(vid_tensors, dim=0).to(self.device, dtype=torch.float16)
 
-        with torch.no_grad(), torch.autocast(self.device):
-            # PE returns (image_features, text_features)
+        device_type = "cuda" if "cuda" in self.device else "cpu"
+        with torch.no_grad(), torch.autocast(device_type=device_type):
+            # PE retourne (image_features, text_features)
             image_features, _ = self.model(tensor, None)
             emb = image_features.float().cpu().numpy()
 
-        # trim (just in case)
-        emb = emb[:, :self.n_components]
+        # Agrège les embeddings par vidéo (moyenne des frames)
+        emb_dict = {}
+        ptr = 0
+        for vid_idx, count in zip(vid_indices, frame_counts):
+            vec = emb[ptr:ptr + count].mean(axis=0)
+            vec = vec[:self.n_components]
+            if len(vec) < self.n_components:
+                vec = np.pad(vec, (0, self.n_components - len(vec)))
+            emb_dict[vid_idx] = vec
+            ptr += count
 
-        # Reassemble results
+        # Recompose la liste alignée sur l'ordre initial
         res = []
-        j = 0
         for i, p in enumerate(video_paths):
-            if i in indices:
-                vec = emb[j]
+            if i in emb_dict:
+                vec = emb_dict[i]
                 res.append({
                     "video_path": p,
                     **{f"pe_{k}": float(vec[k]) for k in range(self.n_components)}
                 })
-                j += 1
             else:
                 res.append(self._make_empty(p))
 
