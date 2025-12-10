@@ -8,6 +8,15 @@ import pandas as pd
 import seaborn as sns
 
 
+def get_device() -> str:
+    """Auto-detect best available device (cuda > cpu)."""
+    try:
+        import torch
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    except ImportError:
+        return "cpu"
+
+
 class Config:
     """Configuration class for the traffic analysis pipeline."""
     
@@ -20,8 +29,8 @@ class Config:
     # Use full (uncompressed) dataset or compressed
     USE_FULL: bool = False
     
-    # Device for GPU models
-    DEVICE: str = "cuda"
+    # Device for GPU models (auto-detected)
+    DEVICE: str = get_device()
     
     # Paths for compressed datasets
     COMPRESSED_PATHS_DICT: dict = {

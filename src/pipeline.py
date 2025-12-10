@@ -14,6 +14,7 @@ from .data_loader import DataLoader
 from .preprocessing import DataPreprocessor
 from .model import TrafficCongestionModel
 from .visualization import Visualizer
+from .video_models import VideoTransformerModel
 
 
 class TrainingPipeline:
@@ -85,48 +86,79 @@ class TrainingPipeline:
         return self
     
     def train(self, model_name: str = "random_forest", use_cv: bool = False, 
-              n_splits: int = 5) -> 'TrainingPipeline':
+              n_splits: int = 5, use_wandb: bool = False, 
+              video_col: str = "video_path", **kwargs) -> 'TrainingPipeline':
         """
         Train the model.
         
         Args:
-            model_name: Name of model from MODELS dispatcher.
-            use_cv: Whether to use Stratified K-Fold CV.
+            model_name: Name of model ("random_forest", "lgbm", "videomae", etc.)
+            use_cv: Whether to use Stratified K-Fold CV (ML models only).
             n_splits: Number of CV folds.
+            use_wandb: Enable W&B logging (video models).
+            video_col: Column with video paths (video models).
+            **kwargs: Additional args for video models (num_epochs, batch_size).
             
         Returns:
             self
         """
-        X_train = self.training_df[self.config.FEATURES_COLS]
         y_train = self.training_df['congestion_rating']
         
-        self.model = TrafficCongestionModel(self.config, model_name=model_name)
-        
-        if use_cv:
-            self.model.fit_cv(X_train, y_train, self.config.FEATURES_COLS, n_splits)
+        # Video transformer models
+        if model_name == "videomae":
+            self.model = VideoTransformerModel(
+                config=self.config,
+                num_epochs=kwargs.get('num_epochs', 4),
+                batch_size=kwargs.get('batch_size', 4),
+            )
+            
+            X_val = self.validation_df if self.validation_df is not None else None
+            y_val = self.validation_df['congestion_rating'] if X_val is not None else None
+            
+            self.model.fit(
+                self.training_df, y_train,
+                X_val=X_val, y_val=y_val,
+                video_col=video_col,
+                use_wandb=use_wandb,
+            )
         else:
-            print(f"Training {model_name}...")
-            self.model.fit(X_train, y_train, self.config.FEATURES_COLS)
+            # ML models
+            X_train = self.training_df[self.config.FEATURES_COLS]
+            self.model = TrafficCongestionModel(self.config, model_name=model_name)
+            
+            if use_cv:
+                self.model.fit_cv(X_train, y_train, self.config.FEATURES_COLS, n_splits)
+            else:
+                print(f"Training {model_name}...")
+                self.model.fit(X_train, y_train, self.config.FEATURES_COLS)
         
         print("Model training complete!")
         return self
     
-    def evaluate(self, show_plots: bool = True) -> Dict:
+    def evaluate(self, show_plots: bool = True, video_col: str = "video_path") -> Dict:
         """
         Evaluate using competition metric: 0.7*Macro-F1 + 0.3*Accuracy.
         
         Args:
             show_plots: Whether to display evaluation plots.
+            video_col: Column with video paths (for video models).
             
         Returns:
             Dictionary with evaluation results.
         """
         print("Evaluating model...")
         
-        X_val = self.validation_df[self.config.FEATURES_COLS]
         y_val = self.validation_df['congestion_rating']
         
-        y_val_encoded, y_pred_encoded, metrics = self.model.evaluate(X_val, y_val)
+        # Video transformer models
+        if isinstance(self.model, VideoTransformerModel):
+            y_val_encoded, y_pred_encoded, metrics = self.model.evaluate(
+                self.validation_df, y_val, video_col=video_col
+            )
+        else:
+            # ML models
+            X_val = self.validation_df[self.config.FEATURES_COLS]
+            y_val_encoded, y_pred_encoded, metrics = self.model.evaluate(X_val, y_val)
         
         # Display competition metrics
         print(f"\n{'='*50}")
@@ -147,13 +179,14 @@ class TrainingPipeline:
                 self.model.get_classes()
             )
             
-            # Feature importance (if available)
-            feat_imp = self.model.get_feature_importance()
-            if feat_imp is not None:
-                self.visualizer.plot_feature_importance(
-                    feat_imp,
-                    self.config.FEATURES_COLS
-                )
+            # Feature importance (ML models only)
+            if hasattr(self.model, 'get_feature_importance'):
+                feat_imp = self.model.get_feature_importance()
+                if feat_imp is not None:
+                    self.visualizer.plot_feature_importance(
+                        feat_imp,
+                        self.config.FEATURES_COLS
+                    )
         
         return metrics
     
@@ -261,9 +294,12 @@ class InferencePipeline:
             )
         return self
     
-    def predict(self) -> pd.DataFrame:
+    def predict(self, video_col: str = "video_path") -> pd.DataFrame:
         """
         Make predictions on test data.
+        
+        Args:
+            video_col: Column with video paths (for video models).
         
         Returns:
             DataFrame with predictions.
@@ -275,8 +311,13 @@ class InferencePipeline:
         
         print("Making predictions...")
         
-        X_test = self.testing_df[self.config.FEATURES_COLS]
-        predictions = self.model.predict(X_test)
+        # Video transformer models
+        if isinstance(self.model, VideoTransformerModel):
+            predictions = self.model.predict(self.testing_df, video_col=video_col)
+        else:
+            # ML models
+            X_test = self.testing_df[self.config.FEATURES_COLS]
+            predictions = self.model.predict(X_test)
         
         # Create submission dataframe
         submission_df = self.testing_df.copy()
