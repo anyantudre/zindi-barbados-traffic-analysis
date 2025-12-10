@@ -404,6 +404,111 @@ class VideoMAEExtractor:
         return self.extract_batch([video_path])[0]
 
 
+class PerceptionEncoderExtractor:
+    """
+    Extract video embeddings using Meta Perception Encoder (PE smallest).
+    Frozen model, no back-propagation, fits challenge constraints.
+    """
+
+    def __init__(self, device: str = "cuda",
+                 num_frames: int = 16,
+                 n_components: int = 1024,
+                 batch_size: int = 8,
+                 model_ckpt: str = "facebook/PE-Core-T16-384"):
+        self.device = device
+        self.num_frames = num_frames
+        self.n_components = n_components
+        self.batch_size = batch_size
+        self.model_ckpt = model_ckpt
+        self.model = None
+        self.processor = None
+
+    def _load_model(self):
+        if self.model is None:
+            import torch
+            from transformers import PerceiverImageProcessor, PerceiverResamplerModel
+
+            self.processor = PerceiverImageProcessor.from_pretrained(self.model_ckpt)
+            self.model = PerceiverResamplerModel.from_pretrained(
+                self.model_ckpt,
+                attn_implementation="sdpa",
+                torch_dtype=torch.float16
+            ).to(self.device)
+
+            self.model.eval()
+
+    def _read_frames(self, video_path):
+        # Reuse your high-performance frame reader
+        return _read_frames_pyav(video_path, self.num_frames)
+
+    def _make_empty(self, video_path):
+        return {
+            "video_path": video_path,
+            **{f"pe_{i}": 0.0 for i in range(self.n_components)}
+        }
+
+    def extract_batch(self, video_paths):
+        import torch
+        self._load_model()
+
+        # 1. Parallel frame reading
+        from concurrent.futures import ThreadPoolExecutor
+        valid = [(i, p) for i, p in enumerate(video_paths) if os.path.exists(p)]
+
+        def read_task(item):
+            i, p = item
+            frames = self._read_frames(p)
+            return (i, frames) if frames else None
+
+        frames_list = []
+        indices = []
+
+        with ThreadPoolExecutor(max_workers=min(8, len(valid) or 1)) as pool:
+            for result in pool.map(read_task, valid):
+                if result:
+                    i, frames = result
+                    frames_list.append(frames)
+                    indices.append(i)
+
+        if not frames_list:
+            return [self._make_empty(p) for p in video_paths]
+
+        # 2. Preprocess each video separately
+        inputs = []
+        for frames in frames_list:
+            inp = self.processor(frames, return_tensors="pt")["pixel_values"]
+            inputs.append(inp)
+
+        tensor = torch.cat(inputs, dim=0).to(self.device, dtype=torch.float16)
+
+        # 3. Forward pass (no backprop)
+        with torch.no_grad():
+            out = self.model(pixel_values=tensor)
+            emb = out.last_hidden_state.float().cpu().numpy()  # shape: B x D
+
+        # 4. Reduce embedding length
+        emb = emb[:, :self.n_components]
+
+        # 5. Repack results
+        res = []
+        j = 0
+        for i, p in enumerate(video_paths):
+            if i in indices:
+                vec = emb[j]
+                res.append({
+                    "video_path": p,
+                    **{f"pe_{k}": float(vec[k]) for k in range(self.n_components)}
+                })
+                j += 1
+            else:
+                res.append(self._make_empty(p))
+
+        return res
+
+    def extract(self, video_path):
+        return self.extract_batch([video_path])[0]
+
+
 # =============================================================================
 # Unified extraction interface
 # =============================================================================
@@ -493,6 +598,8 @@ def get_all_features(config, video_paths: List[str] = None) -> pd.DataFrame:
          lambda: EmbeddingExtractor(config.SAMPLE_INTERVAL, config.DEVICE, config.EMBEDDING_DIM)),
         ('EXTRACT_VIDEOMAE', 'VIDEOMAE_FEATURES_PATH',
          lambda: VideoMAEExtractor(config.DEVICE, config.VIDEOMAE_DIM, config.VIDEOMAE_NUM_FRAMES)),
+        ('EXTRACT_PE', 'PE_FEATURES_PATH',
+        lambda: PerceptionEncoderExtractor(config.DEVICE, config.PE_NUM_FRAMES, config.PE_DIM)),
     ]
     
     for flag_name, path_name, make_extractor in feature_types:

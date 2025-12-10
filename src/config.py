@@ -26,6 +26,7 @@ class Config:
     EXTRACT_FLOW: bool = False       # Optical flow features
     EXTRACT_EMBEDDINGS: bool = False # EfficientNet embeddings
     EXTRACT_VIDEOMAE: bool = False   # VideoMAE spatio-temporal embeddings
+    EXTRACT_PE: bool = False        # Perception Encoder spatio-temporal embeddings
     
     # Use full (uncompressed) dataset or compressed
     USE_FULL: bool = False
@@ -69,7 +70,8 @@ class Config:
     FLOW_FEATURES_PATH: str = None  # e.g. "/kaggle/input/flow-features-traffic/flow_features.csv"
     EMBEDDING_FEATURES_PATH: str = None  # e.g. "/kaggle/input/embedding-features-traffic/embedding_features.csv"
     VIDEOMAE_FEATURES_PATH: str = None  # e.g. "/kaggle/input/videomae-features-traffic/videomae_features.csv"
-    
+    PE_FEATURES_PATH: str = None  # e.g. "/kaggle/input/pe-features-traffic/pe_features.csv"
+
     # Column definitions - Temporal features (from preprocessing)
     TEMPORAL_FEATURES: list = ['signaling', 'day_week', 'hour']
     
@@ -96,6 +98,11 @@ class Config:
     # VideoMAE parameters
     VIDEOMAE_DIM: int = 768       # Number of embedding dimensions to keep
     VIDEOMAE_NUM_FRAMES: int = 16  # Number of frames to sample per video
+
+    # Perception Encoder parameters
+    PE_DIM: int = 128             # or 256 or 512 if you can afford more
+    PE_NUM_FRAMES: int = 16       # same as VideoMAE for consistency
+
     
     def get_features_cols(self) -> list:
         """Get active feature columns based on defined paths (path=None → disabled)."""
@@ -111,6 +118,8 @@ class Config:
             cols.extend([f'emb_std_{i}' for i in range(self.EMBEDDING_DIM)])
         if self.VIDEOMAE_FEATURES_PATH:
             cols.extend([f'vmae_{i}' for i in range(self.VIDEOMAE_DIM)])
+        if self.PE_FEATURES_PATH:
+            cols.extend([f'pe_{i}' for i in range(self.PE_DIM)])
         return cols
     
     # Default features (updated dynamically in pipeline.setup())
