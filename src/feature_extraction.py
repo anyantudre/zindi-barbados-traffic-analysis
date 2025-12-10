@@ -305,13 +305,6 @@ def _read_frames_cv2(video_path: str, num_frames: int = 16) -> List[np.ndarray]:
     return frames[:num_frames]
 
 
-def _read_video_task(args):
-    """Worker function for multiprocessing."""
-    i, path, num_frames = args
-    frames = _read_frames_pyav(path, num_frames)
-    return (i, frames) if frames else None
-
-
 class VideoMAEExtractor:
     """Extract video embeddings using VideoMAE transformer with optimized batch inference."""
     
@@ -340,6 +333,10 @@ class VideoMAEExtractor:
             self.model.eval()
             print(f"VideoMAE model loaded on {self.device}")
     
+    def _read_frames(self, video_path: str) -> List[np.ndarray]:
+        """Read frames using PyAV (fast) with OpenCV fallback."""
+        return _read_frames_pyav(video_path, self.num_frames)
+    
     def _make_empty_result(self, video_path: str) -> Dict:
         """Create empty result for failed videos."""
         return {"video_path": video_path, **{f"vmae_{i}": 0.0 for i in range(self.n_components)}}
@@ -347,19 +344,24 @@ class VideoMAEExtractor:
     def extract_batch(self, video_paths: List[str]) -> List[Dict]:
         """Extract features from multiple videos using optimized batch inference."""
         import torch
-        from concurrent.futures import ProcessPoolExecutor
+        from concurrent.futures import ThreadPoolExecutor
         self._load_model()
         
         n = self.n_components
         
-        # Read frames in parallel using multiprocessing (bypasses GIL)
-        valid_paths = [(i, p, self.num_frames) for i, p in enumerate(video_paths) if os.path.exists(p)]
+        # Read frames in parallel using threads
+        valid_paths = [(i, p) for i, p in enumerate(video_paths) if os.path.exists(p)]
+        
+        def read_task(args):
+            i, path = args
+            frames = self._read_frames(path)
+            return (i, frames) if frames else None
         
         all_frames = []
         valid_indices = []
         
-        with ProcessPoolExecutor(max_workers=min(8, len(valid_paths))) as executor:
-            for result in executor.map(_read_video_task, valid_paths):
+        with ThreadPoolExecutor(max_workers=min(8, len(valid_paths) or 1)) as executor:
+            for result in executor.map(read_task, valid_paths):
                 if result:
                     i, frames = result
                     all_frames.append(frames)
