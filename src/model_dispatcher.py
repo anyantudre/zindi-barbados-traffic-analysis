@@ -4,7 +4,51 @@ Define models and their hyperparameters here.
 Usage: from src.model_dispatcher import MODELS
 """
 
+import numpy as np
 from sklearn.ensemble import RandomForestClassifier, VotingClassifier
+from sklearn.metrics import f1_score, accuracy_score
+
+def competition_score(y_true, y_pred) -> float:
+    """
+    Score officiel de la compétition : 0.7 * macro-F1 + 0.3 * accuracy.
+    Accepte y_pred sous forme de labels (1D) ou de proba/logits (2D).
+    """
+    y_true = np.asarray(y_true)
+    y_pred = np.asarray(y_pred)
+    if y_pred.ndim > 1:
+        y_pred = y_pred.argmax(axis=1)
+    f1 = f1_score(y_true, y_pred, average="macro")
+    acc = accuracy_score(y_true, y_pred)
+    return 0.7 * f1 + 0.3 * acc
+
+
+def competition_metric_xgb(y_pred, dtrain):
+    """
+    Métrique custom pour l'API native XGBoost (eval_metric).
+    y_pred est aplati; on le reshape en (n_samples, n_classes) si besoin.
+    Retourne (name, value).
+    """
+    labels = dtrain.get_label()
+    preds = np.asarray(y_pred)
+    n = labels.shape[0]
+    if preds.ndim == 1 and n > 0:
+        num_class = max(1, preds.size // n)
+        preds = preds.reshape(n, num_class)
+    if preds.ndim > 1:
+        pred_labels = preds.argmax(axis=1)
+    else:
+        pred_labels = preds
+    score = competition_score(labels, pred_labels)
+    return "competition", score
+
+
+def competition_metric_sklearn(y_true, y_pred) -> float:
+    """
+    Métrique pour l'interface scikit-learn (eval_metric dans XGBClassifier
+    ou cross_val_score). Retourne un float directement.
+    """
+    return competition_score(y_true, y_pred)
+
 
 MODELS = {
     "random_forest": RandomForestClassifier(
@@ -27,7 +71,7 @@ try:
         n_jobs=-1,
         device='cuda',
         objective='multi:softmax',
-        eval_metric='mlogloss',
+        eval_metric=competition_metric_sklearn,
         random_state=42,
         **{
             'learning_rate': 0.01, 
