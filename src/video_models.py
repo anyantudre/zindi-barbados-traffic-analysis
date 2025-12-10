@@ -23,48 +23,73 @@ def _import_video_libs():
 
 
 class VideoDataset:
-    """PyTorch Dataset for video classification."""
+    """PyTorch Dataset for video classification with optimized loading."""
     
     def __init__(self, video_paths: List[str], labels: List[int], 
-                 image_processor, num_frames: int = 16, sample_rate: int = 4):
+                 image_processor, num_frames: int = 16, sample_rate: int = 8):
         self.video_paths = video_paths
         self.labels = labels
         self.image_processor = image_processor
         self.num_frames = num_frames
-        self.sample_rate = sample_rate
+        self.sample_rate = sample_rate  # Higher = faster loading
+        self._validated = False
     
     def __len__(self):
         return len(self.video_paths)
     
-    def __getitem__(self, idx):
+    def _load_frames(self, video_path: str) -> List[np.ndarray]:
+        """Load frames from video with optimized reading."""
         import cv2
+        
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            print(f"Warning: Cannot open {video_path}")
+            return []
+        
+        frames = []
+        frame_count = 0
+        max_frames = self.num_frames * self.sample_rate * 2  # Limit reading
+        
+        while frame_count < max_frames:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            if frame_count % self.sample_rate == 0:
+                # Resize for faster processing
+                frame = cv2.resize(frame, (224, 224))
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                frames.append(frame)
+                if len(frames) >= self.num_frames * 2:
+                    break
+            frame_count += 1
+        cap.release()
+        
+        return frames
+    
+    def __getitem__(self, idx):
         torch = _import_torch()
         
         video_path = self.video_paths[idx]
         label = self.labels[idx]
         
-        # Read video frames
-        cap = cv2.VideoCapture(video_path)
-        frames = []
-        frame_count = 0
+        # Validate first load
+        if not self._validated and idx == 0:
+            print(f"  Loading first video: {video_path}")
+            self._validated = True
         
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            if frame_count % self.sample_rate == 0:
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                frames.append(frame)
-            frame_count += 1
-        cap.release()
+        frames = self._load_frames(video_path)
         
         # Sample/pad to num_frames
         if len(frames) >= self.num_frames:
             indices = np.linspace(0, len(frames) - 1, self.num_frames, dtype=int)
             frames = [frames[i] for i in indices]
         else:
+            # Pad with last frame or zeros
             while len(frames) < self.num_frames:
-                frames.append(frames[-1] if frames else np.zeros((224, 224, 3), dtype=np.uint8))
+                if frames:
+                    frames.append(frames[-1])
+                else:
+                    frames.append(np.zeros((224, 224, 3), dtype=np.uint8))
         
         inputs = self.image_processor(list(frames), return_tensors="pt")
         pixel_values = inputs["pixel_values"].squeeze(0)
@@ -171,12 +196,15 @@ class VideoTransformerModel:
             per_device_train_batch_size=self.batch_size,
             per_device_eval_batch_size=self.batch_size,
             warmup_ratio=0.1,
-            logging_steps=10,
+            logging_steps=5,
+            logging_first_step=True,
             load_best_model_at_end=True if val_dataset else False,
             metric_for_best_model="competition_score" if val_dataset else None,
             greater_is_better=True if val_dataset else None,
             num_train_epochs=self.num_epochs,
             fp16=torch.cuda.is_available(),
+            dataloader_num_workers=2,  # Parallel data loading
+            dataloader_pin_memory=True,
             report_to="wandb" if use_wandb else "none",
             run_name=f"videomae-traffic-{self.num_epochs}ep",
         )
@@ -213,6 +241,16 @@ class VideoTransformerModel:
         if val_dataset:
             print(f"Validating on {len(val_dataset)} videos...")
         
+        # Quick sanity check - load first sample
+        print("Loading first sample to verify data pipeline...")
+        try:
+            sample = train_dataset[0]
+            print(f"  ✓ Sample loaded: pixel_values shape = {sample['pixel_values'].shape}")
+        except Exception as e:
+            print(f"  ✗ Error loading sample: {e}")
+            raise
+        
+        print("Starting training (first batch may take time)...")
         self.trainer.train()
         self.trainer.save_model()
         self.is_fitted = True
