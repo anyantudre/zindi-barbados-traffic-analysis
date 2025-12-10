@@ -415,7 +415,8 @@ class VideoMAEExtractor:
 class PerceptionEncoderExtractor:
     """
     Super simple video embedding extractor using Meta PE.
-    One video at a time. No batching, no threads, no heroics.
+    One video at a time. No batching, no threads.
+    Decoding happens on CPU; only embeddings run on GPU.
     """
 
     def __init__(self,
@@ -423,7 +424,7 @@ class PerceptionEncoderExtractor:
                  num_frames=8,
                  n_components=1024,
                  device="cuda"):
-        
+
         self.model_ckpt = model_ckpt
         self.num_frames = num_frames
         self.n_components = n_components
@@ -434,54 +435,55 @@ class PerceptionEncoderExtractor:
 
     def _load_model(self):
         if self.model is None:
+            # Load PE model and preprocessing transform
             self.model = pe.CLIP.from_config(self.model_ckpt, pretrained=True)
             self.model = self.model.to(self.device).eval()
             self.preprocess = transforms.get_image_transform(self.model.image_size)
 
     def _read_frames(self, video_path):
         """
-        Uniformly sample frames using decord, exactly like the repo example.
+        Uniformly sample frames using decord on CPU.
         """
-        vr = decord.VideoReader(video_path)
+        vr = decord.VideoReader(video_path, ctx=decord.cpu(0))  # CPU decode
         total = len(vr)
 
-        frame_ids = [
-            int(i * total / self.num_frames) for i in range(self.num_frames)
-        ]
-
-        frames = vr.get_batch(frame_ids).asnumpy()
+        frame_ids = [int(i * total / self.num_frames) for i in range(self.num_frames)]
+        frames = vr.get_batch(frame_ids).asnumpy()  # numpy arrays on CPU
         return frames
 
     def extract(self, video_path):
         """
-        Process *one* video and return a dict of features.
+        Extract video embedding for a single video.
+        Returns dict: {'video_path': path, 'pe_0': ..., 'pe_1': ..., ...}
         """
 
         if not os.path.exists(video_path):
-            return {"video_path": video_path, **{f"pe_{i}": 0.0 for i in range(self.n_components)}}
+            return {"video_path": video_path,
+                    **{f"pe_{i}": 0.0 for i in range(self.n_components)}}
 
         self._load_model()
 
         # Read frames
         try:
             frames = self._read_frames(video_path)
-        except Exception:
-            # Broken videos get empty vecs instead of crashing the run
-            return {"video_path": video_path, **{f"pe_{i}": 0.0 for i in range(self.n_components)}}
+        except Exception as e:
+            # Broken video or decoding error
+            print(f"Error reading frames for {video_path}: {e}")
+            return {"video_path": video_path,
+                    **{f"pe_{i}": 0.0 for i in range(self.n_components)}}
 
-        # Preprocess each frame individually
+        # Preprocess frames and move to GPU
         imgs = [self.preprocess(Image.fromarray(f)) for f in frames]
         video_tensor = torch.stack(imgs, dim=0).unsqueeze(0).to(self.device)
 
-        # Encode video using official function
+        # Encode video using PE
         with torch.no_grad():
             feats = self.model.encode_video(video_tensor)
             feats = feats.squeeze(0)
 
-        # Normalize or not (depends on your ML pipeline)
         feats = feats.cpu().numpy()
 
-        # Resize/pad to desired dim (usually PE gives enough dims already)
+        # Resize/pad to desired dimension
         if len(feats) < self.n_components:
             feats = np.pad(feats, (0, self.n_components - len(feats)))
         else:
@@ -491,7 +493,6 @@ class PerceptionEncoderExtractor:
             "video_path": video_path,
             **{f"pe_{i}": float(feats[i]) for i in range(self.n_components)}
         }
-
 
 
 # =============================================================================
