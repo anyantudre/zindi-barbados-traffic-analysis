@@ -242,6 +242,7 @@ class InferencePipeline:
         
         # Data containers
         self.testing_df = None
+        self.validation_df = None  # For video models
     
     def load_model(self, path: str) -> 'InferencePipeline':
         """
@@ -272,27 +273,76 @@ class InferencePipeline:
     
     def prepare_test_data(
         self, 
-        testing_df: pd.DataFrame = None
+        testing_df: pd.DataFrame = None,
+        validation_df: pd.DataFrame = None
     ) -> 'InferencePipeline':
         """
         Prepare test data for inference.
         
         Args:
-            testing_df: Pre-processed testing dataframe (optional).
+            testing_df: Pre-processed testing dataframe (for submission IDs).
+            validation_df: Validation dataframe with video paths (for video models).
             
         Returns:
             self
         """
         if testing_df is not None:
             self.testing_df = testing_df
-        else:
+        if validation_df is not None:
+            self.validation_df = validation_df
+        
+        if self.testing_df is None:
             # Load and preprocess from scratch
             print("Loading and preprocessing test data...")
             videos_df, train_df, test_df, features_df = self.data_loader.load_all_data()
-            _, _, self.testing_df = self.preprocessor.prepare_full_dataset(
+            _, self.validation_df, self.testing_df = self.preprocessor.prepare_full_dataset(
                 train_df, test_df, videos_df, features_df
             )
         return self
+    
+    def _extract_group(self, id_col: str) -> tuple:
+        """Extract view_label and rating_type from ID for grouping."""
+        parts = id_col.split('_')
+        # ID format: time_segment_X_View_Label_congestion_enter/exit_rating
+        rating_type = parts[-2] + '_' + parts[-1]
+        view_parts = parts[3:-3]
+        view_label = '_'.join(view_parts) if view_parts else 'unknown'
+        return (view_label, rating_type)
+    
+    def _predict_video_model(self, video_col: str = "video_path") -> pd.DataFrame:
+        """
+        Predict using video model.
+        
+        Video models require actual video files. Since testing_df contains
+        future predictions (no videos), we predict on validation_df (which has
+        videos) and map predictions to testing_df.
+        """
+        from collections import Counter
+        
+        if self.validation_df is None:
+            raise ValueError("Video models require validation_df with video paths.")
+        
+        # Get valid video paths from validation data
+        val_df = self.validation_df.dropna(subset=[video_col]).copy()
+        print(f"Predicting on {len(val_df)} videos from validation set...")
+        
+        # Predict on validation videos
+        predictions = self.model.predict(val_df, video_col=video_col)
+        val_df['predicted'] = predictions
+        
+        # Group predictions and take most common per (view_label, rating_type)
+        val_df['group'] = val_df['ID'].apply(self._extract_group)
+        group_preds = val_df.groupby('group')['predicted'].agg(
+            lambda x: Counter(x).most_common(1)[0][0] if len(x) > 0 else 'free flowing'
+        ).to_dict()
+        
+        # Map predictions to testing_df
+        test_df = self.testing_df.copy()
+        test_df['group'] = test_df['ID'].apply(self._extract_group)
+        test_df['Target'] = test_df['group'].map(group_preds).fillna('free flowing')
+        test_df['Target_Accuracy'] = test_df['Target']
+        
+        return test_df[['ID', 'Target', 'Target_Accuracy']]
     
     def predict(self, video_col: str = "video_path") -> pd.DataFrame:
         """
@@ -311,13 +361,13 @@ class InferencePipeline:
         
         print("Making predictions...")
         
-        # Video transformer models
+        # Video transformer models need special handling
         if isinstance(self.model, VideoTransformerModel):
-            predictions = self.model.predict(self.testing_df, video_col=video_col)
-        else:
-            # ML models
-            X_test = self.testing_df[self.config.FEATURES_COLS]
-            predictions = self.model.predict(X_test)
+            return self._predict_video_model(video_col)
+        
+        # ML models - direct prediction
+        X_test = self.testing_df[self.config.FEATURES_COLS]
+        predictions = self.model.predict(X_test)
         
         # Create submission dataframe
         submission_df = self.testing_df.copy()
