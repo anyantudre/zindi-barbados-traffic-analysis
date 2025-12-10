@@ -243,6 +243,90 @@ class EmbeddingExtractor:
         }
 
 
+class VideoMAEExtractor:
+    """Extract video embeddings using VideoMAE transformer (spatio-temporal features)."""
+    
+    def __init__(self, device: str = "cuda", n_components: int = 64, 
+                 num_frames: int = 16, model_ckpt: str = "MCG-NJU/videomae-base"):
+        self.device = device
+        self.n_components = n_components
+        self.num_frames = num_frames
+        self.model_ckpt = model_ckpt
+        self.model = None
+        self.processor = None
+    
+    def _load_model(self):
+        if self.model is None:
+            import torch
+            from transformers import VideoMAEImageProcessor, VideoMAEModel
+            
+            self.processor = VideoMAEImageProcessor.from_pretrained(self.model_ckpt)
+            self.model = VideoMAEModel.from_pretrained(self.model_ckpt)
+            self.model.to(self.device).eval()
+    
+    def _read_frames(self, video_path: str) -> List[np.ndarray]:
+        """Read and uniformly sample frames from video."""
+        cap = cv2.VideoCapture(video_path)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        
+        if total_frames <= 0:
+            cap.release()
+            return []
+        
+        # Uniform sampling across video
+        indices = np.linspace(0, total_frames - 1, self.num_frames, dtype=int)
+        frames = []
+        
+        for idx in indices:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+            ret, frame = cap.read()
+            if ret:
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                frames.append(frame)
+        cap.release()
+        
+        # Pad if needed
+        while len(frames) < self.num_frames:
+            frames.append(frames[-1] if frames else np.zeros((224, 224, 3), dtype=np.uint8))
+        
+        return frames[:self.num_frames]
+    
+    def extract(self, video_path: str) -> Dict:
+        """Extract VideoMAE embeddings (CLS token + mean pooling)."""
+        import torch
+        self._load_model()
+        
+        n = self.n_components
+        frames = self._read_frames(video_path)
+        
+        if not frames:
+            return {"video_path": video_path,
+                    **{f"vmae_{i}": 0.0 for i in range(n)}}
+        
+        # Process frames
+        inputs = self.processor(frames, return_tensors="pt")
+        inputs = {k: v.to(self.device) for k, v in inputs.items()}
+        
+        with torch.no_grad():
+            outputs = self.model(**inputs)
+            # CLS token embedding (first token of last hidden state)
+            cls_emb = outputs.last_hidden_state[:, 0, :].cpu().numpy().squeeze()
+            # Also get mean pooled embedding
+            mean_emb = outputs.last_hidden_state.mean(dim=1).cpu().numpy().squeeze()
+        
+        # Combine CLS and mean, then truncate to n_components
+        combined = np.concatenate([cls_emb, mean_emb])[:n]
+        
+        # Pad if hidden_size < n_components
+        if len(combined) < n:
+            combined = np.pad(combined, (0, n - len(combined)))
+        
+        return {
+            "video_path": video_path,
+            **{f"vmae_{i}": float(combined[i]) for i in range(n)}
+        }
+
+
 # =============================================================================
 # Unified extraction interface
 # =============================================================================
@@ -306,6 +390,8 @@ def get_all_features(config, video_paths: List[str] = None) -> pd.DataFrame:
          lambda: FlowExtractor(config.SAMPLE_INTERVAL)),
         ('EXTRACT_EMBEDDINGS', 'EMBEDDING_FEATURES_PATH',
          lambda: EmbeddingExtractor(config.SAMPLE_INTERVAL, config.DEVICE, config.EMBEDDING_DIM)),
+        ('EXTRACT_VIDEOMAE', 'VIDEOMAE_FEATURES_PATH',
+         lambda: VideoMAEExtractor(config.DEVICE, config.VIDEOMAE_DIM, config.VIDEOMAE_NUM_FRAMES)),
     ]
     
     for flag_name, path_name, make_extractor in feature_types:

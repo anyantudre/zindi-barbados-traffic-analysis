@@ -25,6 +25,7 @@ class Config:
     EXTRACT_YOLO: bool = False       # YOLO vehicle detection features
     EXTRACT_FLOW: bool = False       # Optical flow features
     EXTRACT_EMBEDDINGS: bool = False # EfficientNet embeddings
+    EXTRACT_VIDEOMAE: bool = False   # VideoMAE spatio-temporal embeddings
     
     # Use full (uncompressed) dataset or compressed
     USE_FULL: bool = False
@@ -67,6 +68,7 @@ class Config:
     YOLO_FEATURES_PATH: str = None  # e.g. "/kaggle/input/yolo-features-traffic/yolo_features.csv"
     FLOW_FEATURES_PATH: str = None  # e.g. "/kaggle/input/flow-features-traffic/flow_features.csv"
     EMBEDDING_FEATURES_PATH: str = None  # e.g. "/kaggle/input/embedding-features-traffic/embedding_features.csv"
+    VIDEOMAE_FEATURES_PATH: str = None  # e.g. "/kaggle/input/videomae-features-traffic/videomae_features.csv"
     
     # Column definitions - Temporal features (from preprocessing)
     TEMPORAL_FEATURES: list = ['signaling', 'day_week', 'hour']
@@ -91,6 +93,10 @@ class Config:
     # Embedding dimension (first N components)
     EMBEDDING_DIM: int = 64
     
+    # VideoMAE parameters
+    VIDEOMAE_DIM: int = 768       # Number of embedding dimensions to keep
+    VIDEOMAE_NUM_FRAMES: int = 16  # Number of frames to sample per video
+    
     def get_features_cols(self) -> list:
         """Get active feature columns based on defined paths (path=None → disabled)."""
         cols = self.TEMPORAL_FEATURES.copy()
@@ -103,6 +109,8 @@ class Config:
         if self.EMBEDDING_FEATURES_PATH:
             cols.extend([f'emb_mean_{i}' for i in range(self.EMBEDDING_DIM)])
             cols.extend([f'emb_std_{i}' for i in range(self.EMBEDDING_DIM)])
+        if self.VIDEOMAE_FEATURES_PATH:
+            cols.extend([f'vmae_{i}' for i in range(self.VIDEOMAE_DIM)])
         return cols
     
     # Default features (updated dynamically in pipeline.setup())
