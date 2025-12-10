@@ -267,8 +267,9 @@ class VideoMAEExtractor:
                 self.model_ckpt,
                 attn_implementation="sdpa",
                 torch_dtype=torch.float16
-            )
-            self.model.to(self.device).eval()
+            ).to(self.device)
+            self.model.eval()
+            print(f"VideoMAE model loaded on {self.device}")
     
     def _read_frames(self, video_path: str) -> List[np.ndarray]:
         """Read and uniformly sample frames from video."""
@@ -302,19 +303,28 @@ class VideoMAEExtractor:
     def extract_batch(self, video_paths: List[str]) -> List[Dict]:
         """Extract features from multiple videos using batch inference."""
         import torch
+        from concurrent.futures import ThreadPoolExecutor
         self._load_model()
         
         n = self.n_components
         results = []
         
-        # Read all frames first (parallel I/O could be added later)
+        # Read frames in parallel using threads (I/O bound)
+        valid_paths = [(i, p) for i, p in enumerate(video_paths) if os.path.exists(p)]
+        
+        def read_with_index(args):
+            i, path = args
+            frames = self._read_frames(path)
+            return (i, frames) if frames else None
+        
         all_frames = []
         valid_indices = []
         
-        for i, path in enumerate(video_paths):
-            if os.path.exists(path):
-                frames = self._read_frames(path)
-                if frames:
+        with ThreadPoolExecutor(max_workers=min(8, len(valid_paths))) as executor:
+            results_iter = executor.map(read_with_index, valid_paths)
+            for result in results_iter:
+                if result:
+                    i, frames = result
                     all_frames.append(frames)
                     valid_indices.append(i)
         
@@ -331,7 +341,7 @@ class VideoMAEExtractor:
                            for frames in batch_frames]
             batch_tensor = torch.cat(batch_inputs, dim=0).to(self.device, dtype=torch.float16)
             
-            with torch.no_grad():
+            with torch.no_grad(), torch.cuda.amp.autocast(enabled=self.device=="cuda"):
                 outputs = self.model(pixel_values=batch_tensor)
                 cls_emb = outputs.last_hidden_state[:, 0, :].float().cpu().numpy()
                 mean_emb = outputs.last_hidden_state.mean(dim=1).float().cpu().numpy()
