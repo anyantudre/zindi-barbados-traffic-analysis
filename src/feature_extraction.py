@@ -249,6 +249,7 @@ def _read_frames_pyav(video_path: str, num_frames: int = 16) -> List[np.ndarray]
         import av
     except ImportError:
         # Fallback to OpenCV if PyAV not available
+        print("PyAV not available, falling back to OpenCV")
         return _read_frames_cv2(video_path, num_frames)
     
     try:
@@ -277,6 +278,7 @@ def _read_frames_pyav(video_path: str, num_frames: int = 16) -> List[np.ndarray]
         
         return frames[:num_frames]
     except Exception:
+        print("Error reading frames with PyAV, falling back to OpenCV")
         return []
 
 
@@ -287,6 +289,7 @@ def _read_frames_cv2(video_path: str, num_frames: int = 16) -> List[np.ndarray]:
     
     if total_frames <= 0:
         cap.release()
+        print("Error reading frames with OpenCV")
         return []
     
     indices = np.linspace(0, total_frames - 1, num_frames, dtype=int)
@@ -370,13 +373,10 @@ class VideoMAEExtractor:
         if not all_frames:
             return [self._make_empty_result(p) for p in video_paths]
         
-        # Batch preprocessing - flatten all frames for single processor call
-        all_frames_flat = [f for frames in all_frames for f in frames]
-        processed = self.processor(all_frames_flat, return_tensors="pt")["pixel_values"]
-        
-        # Reshape: (N*num_frames, C, H, W) -> (N, num_frames, C, H, W)
-        batch_tensor = processed.view(len(all_frames), self.num_frames, *processed.shape[1:])
-        batch_tensor = batch_tensor.to(self.device, dtype=torch.float16)
+        # Process each video's frames separately (processor expects frames from ONE video)
+        batch_inputs = [self.processor(frames, return_tensors="pt")["pixel_values"] 
+                       for frames in all_frames]
+        batch_tensor = torch.cat(batch_inputs, dim=0).to(self.device, dtype=torch.float16)
         
         # GPU inference
         with torch.no_grad():
