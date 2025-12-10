@@ -256,7 +256,7 @@ class Visualizer:
     def plot_feature_importance(
         importances: np.ndarray, 
         feature_names: List[str],
-        figsize: tuple = (10, 6)
+        figsize: tuple = None
     ) -> None:
         """
         Plot feature importance bar chart.
@@ -264,9 +264,15 @@ class Visualizer:
         Args:
             importances: Array of feature importances.
             feature_names: List of feature names.
-            figsize: Figure size.
+            figsize: Optional figure size. If None, height is scaled to the
+                     number of features to keep labels readable.
         """
         indices = np.argsort(importances)[::-1]
+        
+        if figsize is None:
+            # 0.35 inch per feature, with a reasonable minimum height
+            height = max(6, 0.35 * len(feature_names))
+            figsize = (10, height)
         
         plt.figure(figsize=figsize)
         sns.barplot(x=importances[indices], y=[feature_names[i] for i in indices])
