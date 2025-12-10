@@ -15,8 +15,9 @@ import torch
 from concurrent.futures import ThreadPoolExecutor
 from PIL import Image
 
+import decord
 import core.vision_encoder.pe as pe
-import core.vision_encoder.transforms as pe_transforms
+import core.vision_encoder.transforms as transforms
 
 # =============================================================================
 # Base Extractors (CPU-only, lightweight)
@@ -413,115 +414,83 @@ class VideoMAEExtractor:
 
 class PerceptionEncoderExtractor:
     """
-    Extract video embeddings using Meta Perception Encoder (PE smallest).
-    Frozen model, no back-propagation, fits challenge constraints.
+    Super simple video embedding extractor using Meta PE.
+    One video at a time. No batching, no threads, no heroics.
     """
 
-    def __init__(self, device: str = "cuda",
-                 num_frames: int = 16,
-                 n_components: int = 1024,
-                 batch_size: int = 8,
-                 model_ckpt: str = "PE-Core-T16-384"):
-        self.device = device
+    def __init__(self,
+                 model_ckpt="PE-Core-L14-336",
+                 num_frames=8,
+                 n_components=1024,
+                 device="cuda"):
+        
+        self.model_ckpt = model_ckpt
         self.num_frames = num_frames
         self.n_components = n_components
-        self.batch_size = batch_size
-        self.model_ckpt = model_ckpt
+        self.device = device
+
         self.model = None
         self.preprocess = None
 
     def _load_model(self):
         if self.model is None:
-            # Load PE model (official)
-            self.model = pe.CLIP.from_config(
-                self.model_ckpt,
-                pretrained=True
-            ).to(self.device).eval()
-
-            # Official image transform
-            self.preprocess = pe_transforms.get_image_transform(
-                self.model.image_size
-            )
+            self.model = pe.CLIP.from_config(self.model_ckpt, pretrained=True)
+            self.model = self.model.to(self.device).eval()
+            self.preprocess = transforms.get_image_transform(self.model.image_size)
 
     def _read_frames(self, video_path):
-        return _read_frames_pyav(video_path, self.num_frames)
+        """
+        Uniformly sample frames using decord, exactly like the repo example.
+        """
+        vr = decord.VideoReader(video_path)
+        total = len(vr)
 
-    def _make_empty(self, video_path):
-        return {
-            "video_path": video_path,
-            **{f"pe_{i}": 0.0 for i in range(self.n_components)}
-        }
+        frame_ids = [
+            int(i * total / self.num_frames) for i in range(self.num_frames)
+        ]
 
-    def extract_batch(self, video_paths):
-        self._load_model()
-
-        valid = [(i, p) for i, p in enumerate(video_paths) if os.path.exists(p)]
-
-        def read_task(item):
-            i, p = item
-            frames = self._read_frames(p)
-            return (i, frames) if frames else None
-
-        frames_list = []
-        indices = []
-
-        with ThreadPoolExecutor(max_workers=min(8, len(valid) or 1)) as pool:
-            for result in pool.map(read_task, valid):
-                if result:
-                    i, frames = result
-                    frames_list.append(frames)
-                    indices.append(i)
-
-        if not frames_list:
-            return [self._make_empty(p) for p in video_paths]
-
-        # Prétraitement des frames (sortie : liste de tenseurs 4D num_frames x C x H x W)
-        vid_tensors = []
-        vid_indices = []
-        frame_counts = []
-        for frames in frames_list:
-            imgs = [self.preprocess(Image.fromarray(f)) for f in frames]
-            t = torch.stack(imgs, dim=0)  # num_frames x C x H x W
-            vid_tensors.append(t)
-            vid_indices.append(indices[len(vid_indices)])
-            frame_counts.append(t.shape[0])
-
-        # Empile toutes les frames des vidéos dans le batch (4D) attendu par le modèle
-        tensor = torch.cat(vid_tensors, dim=0).to(self.device, dtype=torch.float16)
-
-        device_type = "cuda" if "cuda" in self.device else "cpu"
-        with torch.no_grad(), torch.autocast(device_type=device_type):
-            # PE retourne (image_features, text_features)
-            image_features, _ = self.model(tensor, None)
-            emb = image_features.float().cpu().numpy()
-
-        # Agrège les embeddings par vidéo (moyenne des frames)
-        emb_dict = {}
-        ptr = 0
-        for vid_idx, count in zip(vid_indices, frame_counts):
-            vec = emb[ptr:ptr + count].mean(axis=0)
-            vec = vec[:self.n_components]
-            if len(vec) < self.n_components:
-                vec = np.pad(vec, (0, self.n_components - len(vec)))
-            emb_dict[vid_idx] = vec
-            ptr += count
-
-        # Recompose la liste alignée sur l'ordre initial
-        res = []
-        for i, p in enumerate(video_paths):
-            if i in emb_dict:
-                vec = emb_dict[i]
-                res.append({
-                    "video_path": p,
-                    **{f"pe_{k}": float(vec[k]) for k in range(self.n_components)}
-                })
-            else:
-                res.append(self._make_empty(p))
-
-        return res
+        frames = vr.get_batch(frame_ids).asnumpy()
+        return frames
 
     def extract(self, video_path):
-        return self.extract_batch([video_path])[0]
+        """
+        Process *one* video and return a dict of features.
+        """
+
+        if not os.path.exists(video_path):
+            return {"video_path": video_path, **{f"pe_{i}": 0.0 for i in range(self.n_components)}}
+
+        self._load_model()
+
+        # Read frames
+        try:
+            frames = self._read_frames(video_path)
+        except Exception:
+            # Broken videos get empty vecs instead of crashing the run
+            return {"video_path": video_path, **{f"pe_{i}": 0.0 for i in range(self.n_components)}}
+
+        # Preprocess each frame individually
+        imgs = [self.preprocess(Image.fromarray(f)) for f in frames]
+        video_tensor = torch.stack(imgs, dim=0).unsqueeze(0).to(self.device)
+
+        # Encode video using official function
+        with torch.no_grad():
+            feats = self.model.encode_video(video_tensor)
+            feats = feats.squeeze(0)
+
+        # Normalize or not (depends on your ML pipeline)
+        feats = feats.cpu().numpy()
+
+        # Resize/pad to desired dim (usually PE gives enough dims already)
+        if len(feats) < self.n_components:
+            feats = np.pad(feats, (0, self.n_components - len(feats)))
+        else:
+            feats = feats[:self.n_components]
+
+        return {
+            "video_path": video_path,
+            **{f"pe_{i}": float(feats[i]) for i in range(self.n_components)}
+        }
 
 
 
