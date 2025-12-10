@@ -329,7 +329,7 @@ class VideoMAEExtractor:
             # Process each video's frames and stack into batch
             batch_inputs = [self.processor(frames, return_tensors="pt")["pixel_values"] 
                            for frames in batch_frames]
-            batch_tensor = torch.cat(batch_inputs, dim=0).to(self.device)
+            batch_tensor = torch.cat(batch_inputs, dim=0).to(self.device, dtype=torch.float16)
             
             with torch.no_grad():
                 outputs = self.model(pixel_values=batch_tensor)
