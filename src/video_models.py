@@ -282,21 +282,34 @@ class VideoTransformerModel:
         device = torch.device(self.device if torch.cuda.is_available() else "cpu")
         self.model.to(device)
         
-        video_paths = X[video_col].tolist()
-        predictions = []
+        # Filter out NaN/invalid video paths
+        valid_mask = X[video_col].notna() & (X[video_col] != '')
+        valid_df = X[valid_mask].copy()
         
+        print(f"Predicting on {len(valid_df)}/{len(X)} valid videos...")
+        
+        # Predict for valid paths
+        valid_predictions = []
         from tqdm import tqdm
-        for video_path in tqdm(video_paths, desc="Predicting"):
-            dataset = VideoDataset([video_path], [0], self.image_processor, self.num_frames)
-            sample = dataset[0]
-            inputs = {"pixel_values": sample["pixel_values"].unsqueeze(0).to(device)}
-            
-            with torch.no_grad():
-                outputs = self.model(**inputs)
-                pred = outputs.logits.argmax(-1).item()
-            predictions.append(pred)
+        for video_path in tqdm(valid_df[video_col].tolist(), desc="Predicting"):
+            try:
+                dataset = VideoDataset([str(video_path)], [0], self.image_processor, self.num_frames)
+                sample = dataset[0]
+                inputs = {"pixel_values": sample["pixel_values"].unsqueeze(0).to(device)}
+                
+                with torch.no_grad():
+                    outputs = self.model(**inputs)
+                    pred = outputs.logits.argmax(-1).item()
+                valid_predictions.append(pred)
+            except Exception as e:
+                print(f"Error predicting {video_path}: {e}")
+                valid_predictions.append(0)  # Default to first class
         
-        return np.array(predictions)
+        # Build full predictions array (default=0 for invalid paths)
+        predictions = np.zeros(len(X), dtype=int)
+        predictions[valid_mask.values] = valid_predictions
+        
+        return predictions
     
     def evaluate(self, X_val: pd.DataFrame, y_val: pd.Series, video_col: str = "video_path"):
         """Evaluate with competition metric."""
