@@ -244,13 +244,15 @@ class EmbeddingExtractor:
 
 
 class VideoMAEExtractor:
-    """Extract video embeddings using VideoMAE transformer (spatio-temporal features)."""
+    """Extract video embeddings using VideoMAE transformer with batch inference."""
     
     def __init__(self, device: str = "cuda", n_components: int = 64, 
-                 num_frames: int = 16, model_ckpt: str = "MCG-NJU/videomae-base"):
+                 num_frames: int = 16, batch_size: int = 16,
+                 model_ckpt: str = "MCG-NJU/videomae-base"):
         self.device = device
         self.n_components = n_components
         self.num_frames = num_frames
+        self.batch_size = batch_size
         self.model_ckpt = model_ckpt
         self.model = None
         self.processor = None
@@ -261,7 +263,11 @@ class VideoMAEExtractor:
             from transformers import VideoMAEImageProcessor, VideoMAEModel
             
             self.processor = VideoMAEImageProcessor.from_pretrained(self.model_ckpt)
-            self.model = VideoMAEModel.from_pretrained(self.model_ckpt)
+            self.model = VideoMAEModel.from_pretrained(
+                self.model_ckpt,
+                attn_implementation="sdpa",
+                torch_dtype=torch.bfloat16
+            )
             self.model.to(self.device).eval()
     
     def _read_frames(self, video_path: str) -> List[np.ndarray]:
@@ -273,7 +279,6 @@ class VideoMAEExtractor:
             cap.release()
             return []
         
-        # Uniform sampling across video
         indices = np.linspace(0, total_frames - 1, self.num_frames, dtype=int)
         frames = []
         
@@ -285,46 +290,74 @@ class VideoMAEExtractor:
                 frames.append(frame)
         cap.release()
         
-        # Pad if needed
         while len(frames) < self.num_frames:
             frames.append(frames[-1] if frames else np.zeros((224, 224, 3), dtype=np.uint8))
         
         return frames[:self.num_frames]
     
-    def extract(self, video_path: str) -> Dict:
-        """Extract VideoMAE embeddings (CLS token + mean pooling)."""
+    def _make_empty_result(self, video_path: str) -> Dict:
+        """Create empty result for failed videos."""
+        return {"video_path": video_path, **{f"vmae_{i}": 0.0 for i in range(self.n_components)}}
+    
+    def extract_batch(self, video_paths: List[str]) -> List[Dict]:
+        """Extract features from multiple videos using batch inference."""
         import torch
         self._load_model()
         
         n = self.n_components
-        frames = self._read_frames(video_path)
+        results = []
         
-        if not frames:
-            return {"video_path": video_path,
-                    **{f"vmae_{i}": 0.0 for i in range(n)}}
+        # Read all frames first (parallel I/O could be added later)
+        all_frames = []
+        valid_indices = []
         
-        # Process frames
-        inputs = self.processor(frames, return_tensors="pt")
-        inputs = {k: v.to(self.device) for k, v in inputs.items()}
+        for i, path in enumerate(video_paths):
+            if os.path.exists(path):
+                frames = self._read_frames(path)
+                if frames:
+                    all_frames.append(frames)
+                    valid_indices.append(i)
         
-        with torch.no_grad():
-            outputs = self.model(**inputs)
-            # CLS token embedding (first token of last hidden state)
-            cls_emb = outputs.last_hidden_state[:, 0, :].cpu().numpy().squeeze()
-            # Also get mean pooled embedding
-            mean_emb = outputs.last_hidden_state.mean(dim=1).cpu().numpy().squeeze()
+        if not all_frames:
+            return [self._make_empty_result(p) for p in video_paths]
         
-        # Combine CLS and mean, then truncate to n_components
-        combined = np.concatenate([cls_emb, mean_emb])[:n]
+        # Process in batches
+        all_embeddings = []
+        for batch_start in range(0, len(all_frames), self.batch_size):
+            batch_frames = all_frames[batch_start:batch_start + self.batch_size]
+            
+            # Process each video's frames and stack into batch
+            batch_inputs = [self.processor(frames, return_tensors="pt")["pixel_values"] 
+                           for frames in batch_frames]
+            batch_tensor = torch.cat(batch_inputs, dim=0).to(self.device)
+            
+            with torch.no_grad():
+                outputs = self.model(pixel_values=batch_tensor)
+                cls_emb = outputs.last_hidden_state[:, 0, :].float().cpu().numpy()
+                mean_emb = outputs.last_hidden_state.mean(dim=1).float().cpu().numpy()
+            
+            # Combine and truncate
+            for cls, mean in zip(cls_emb, mean_emb):
+                combined = np.concatenate([cls, mean])[:n]
+                if len(combined) < n:
+                    combined = np.pad(combined, (0, n - len(combined)))
+                all_embeddings.append(combined)
         
-        # Pad if hidden_size < n_components
-        if len(combined) < n:
-            combined = np.pad(combined, (0, n - len(combined)))
+        # Build results for all paths
+        emb_idx = 0
+        for i, path in enumerate(video_paths):
+            if i in valid_indices:
+                emb = all_embeddings[emb_idx]
+                results.append({"video_path": path, **{f"vmae_{j}": float(emb[j]) for j in range(n)}})
+                emb_idx += 1
+            else:
+                results.append(self._make_empty_result(path))
         
-        return {
-            "video_path": video_path,
-            **{f"vmae_{i}": float(combined[i]) for i in range(n)}
-        }
+        return results
+    
+    def extract(self, video_path: str) -> Dict:
+        """Extract VideoMAE embeddings for single video."""
+        return self.extract_batch([video_path])[0]
 
 
 # =============================================================================
@@ -350,16 +383,40 @@ def extract_features(extractor, video_paths: List[str], cache_path: str,
         return pd.read_csv(cache_path)
     
     print(f"Extracting {extractor.__class__.__name__} features...")
-    records = []
     
-    for video_path in tqdm(video_paths, desc=extractor.__class__.__name__):
-        if os.path.exists(video_path):
+    # Use batch extraction if available (VideoMAEExtractor)
+    if hasattr(extractor, 'extract_batch'):
+        batch_size = getattr(extractor, 'batch_size', 16)
+        records = []
+        valid_paths = [p for p in video_paths if os.path.exists(p)]
+        
+        for i in tqdm(range(0, len(valid_paths), batch_size), 
+                      desc=f"{extractor.__class__.__name__} (batch={batch_size})"):
+            batch_paths = valid_paths[i:i + batch_size]
             try:
-                feat = extractor.extract(video_path)
-                if feat:
-                    records.append(feat)
+                batch_results = extractor.extract_batch(batch_paths)
+                records.extend([r for r in batch_results if r])
             except Exception as e:
-                print(f"Error: {video_path}: {e}")
+                print(f"Batch error: {e}")
+                # Fallback to single extraction
+                for path in batch_paths:
+                    try:
+                        feat = extractor.extract(path)
+                        if feat:
+                            records.append(feat)
+                    except Exception as e2:
+                        print(f"Error: {path}: {e2}")
+    else:
+        # Single video extraction (other extractors)
+        records = []
+        for video_path in tqdm(video_paths, desc=extractor.__class__.__name__):
+            if os.path.exists(video_path):
+                try:
+                    feat = extractor.extract(video_path)
+                    if feat:
+                        records.append(feat)
+                except Exception as e:
+                    print(f"Error: {video_path}: {e}")
     
     df = pd.DataFrame(records)
     df.to_csv(cache_path, index=False)
