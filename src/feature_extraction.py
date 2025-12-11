@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from typing import Dict, List
+from PIL import Image
 
 import torch
 from concurrent.futures import ThreadPoolExecutor
@@ -608,8 +609,7 @@ class PerceptionEncoderExtractor:
         if self.model is None:
             import core.vision_encoder.pe as pe
             import core.vision_encoder.transforms as transforms
-            from PIL import Image
-            
+
             # Load PE model and preprocessing transform
             self.model = pe.CLIP.from_config(self.model_ckpt, pretrained=True)
             self.model = self.model.to(self.device).eval()
