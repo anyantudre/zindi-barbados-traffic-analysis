@@ -12,7 +12,7 @@ from sklearn.metrics import classification_report, f1_score, accuracy_score
 from sklearn.base import clone
 from typing import Dict, List, Tuple, Optional
 import joblib
-
+from sklearn.utils.class_weight import compute_sample_weight
 from .config import Config
 from .model_dispatcher import MODELS
 
@@ -86,11 +86,17 @@ class TrafficCongestionModel:
         
         skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
         self.cv_scores = []
-        
+
+        if self.model_name == 'xgb':
+            sample_weight = compute_sample_weight('balanced', y_encoded)
+
         print(f"Training {self.model_name} with {n_splits}-fold Stratified CV...")
         for fold, (train_idx, val_idx) in enumerate(skf.split(X_feat, y_encoded)):
             model_fold = clone(self.model)
-            model_fold.fit(X_feat[train_idx], y_encoded[train_idx])
+            if self.model_name == 'xgb':
+                model_fold.fit(X_feat[train_idx], y_encoded[train_idx], sample_weight=sample_weight)
+            else:
+                model_fold.fit(X_feat[train_idx], y_encoded[train_idx])
             
             score = model_fold.score(X_feat[val_idx], y_encoded[val_idx])
             self.cv_scores.append(score)

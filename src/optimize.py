@@ -11,7 +11,10 @@ from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import f1_score
 from sklearn.preprocessing import LabelEncoder
 from sklearn.base import clone
+from sklearn.utils.class_weight import compute_sample_weight
 
+
+from model_dispatcher import competition_metric_xgb
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 
@@ -30,8 +33,10 @@ def get_param_space(trial, model_name: str) -> dict:
                 reg_alpha=trial.suggest_float('reg_alpha', 1e-4, 10.0, log=True),
                 reg_lambda=trial.suggest_float('reg_lambda', 1e-4, 10.0, log=True),
                 n_estimators=trial.suggest_int('n_estimators', 100, 500),
-                n_jobs=-1, device='cuda', random_state=42
-            )
+                n_jobs=-1, device='cuda', random_state=42, eval_metric=competition_metric_xgb,
+                objective='multi:softmax'
+            ),
+            
         }
     
     elif model_name == "lgbm":
@@ -88,6 +93,9 @@ def objective(trial, X, y, model_name, n_folds, random_state):
     params = get_param_space(trial, model_name)
     model = params['model']
     
+    if model_name == 'xgb':
+        sample_weight = compute_sample_weight('balanced', y)
+    
     skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=random_state)
     f1_scores = []
     
@@ -96,7 +104,10 @@ def objective(trial, X, y, model_name, n_folds, random_state):
         y_train, y_val = y[train_idx], y[val_idx]
         
         model_clone = clone(model)
-        model_clone.fit(X_train, y_train)
+        if model_name == 'xgb':
+            model_clone.fit(X_train, y_train, sample_weight=sample_weight)
+        else:
+            model_clone.fit(X_train, y_train)
         y_pred = model_clone.predict(X_val)
         
         f1 = f1_score(y_val, y_pred, average='macro')
