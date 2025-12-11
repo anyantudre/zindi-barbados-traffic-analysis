@@ -592,8 +592,6 @@ class YOLOFlowExtractor:
     Traffic-flow feature extractor using YOLO11 tracking with persistence.
     """
 
-    VEHICLE_CLASSES = {"car", "truck", "bus", "motorcycle"}
-
     def __init__(
         self,
         sample_interval: int = 5,
@@ -627,24 +625,26 @@ class YOLOFlowExtractor:
                 return zname
         return "zone_3"
 
-    def extract(self, video_path: str, mode: str = "fast") -> Dict:
+    def extract(self, video_path: str, mode: str = "deep") -> Dict:
         import numpy as np
+        import os
 
         self._load_model()
         compute_masks = mode == "deep"
         compute_speed = mode == "deep"
 
-        zone_counts = {z: 0 for z in self.zones}
+        frame_idx = 0
+        prev_positions = {}
+        speed_dists = []
+        stopped_counts = 0
         cluster_sizes = []
         coverage_pixels = []
 
-        speed_dists = []
-        stopped_counts = 0
-        prev_positions = {}
+        zone_counts = {z: 0 for z in self.zones}
 
-        frame_idx = 0
+        # Dynamic class counts
+        class_counts = {}   # filled dynamically once we get result.names
 
-        # Ensure persist=True so tracker IDs are kept across frames
         results = self.model.track(
             source=video_path,
             persist=True,
@@ -652,42 +652,53 @@ class YOLOFlowExtractor:
             imgsz=self.imgsz,
             vid_stride=self.sample_interval,
             device=self.device,
+            stream=True,
+            verbose=False
         )
 
         for result in results:
+            if not class_counts:
+                # Initialize class counters dynamically
+                class_counts = {f"class_count_{name}": 0 for name in result.names.values()}
+
             frame = result.orig_img
             H, W = frame.shape[:2]
+            ids_this_frame = []
+            positions = {}
 
+            # Mask coverage
             if compute_masks and result.masks is not None and (frame_idx % self.mask_interval == 0):
                 m = result.masks.data
                 coverage_pixels.append(float(m.sum()) / (H * W))
 
-            ids_this_frame = []
-            positions = {}
-
             if result.boxes is not None:
-                # If IDs exist they will be in boxes.id
+                # Get tracking IDs if available
                 try:
                     track_ids = result.boxes.id.int().cpu().tolist()
                 except Exception:
                     track_ids = [None] * len(result.boxes)
 
                 for box, tid in zip(result.boxes, track_ids):
-                    name = result.names[int(box.cls)]
-                    if name not in self.VEHICLE_CLASSES:
-                        continue
+                    cls_id = int(box.cls)
+                    cls_name = result.names[cls_id]
 
+                    # count per class
+                    class_counts[f"class_count_{cls_name}"] += 1
+
+                    # basic tracking-based features
                     xyxy = box.xyxy.cpu().numpy()[0]
                     x1, y1, x2, y2 = xyxy
                     cx = (x1 + x2) / 2
+                    cy = (y1 + y2) / 2
                     cx_norm = cx / W
 
                     ids_this_frame.append(tid)
                     if tid is not None:
-                        positions[tid] = (cx, (y1 + y2) / 2)
+                        positions[tid] = (cx, cy)
 
                     zone_counts[self._get_zone(cx_norm)] += 1
 
+            # speed / stopped metrics
             if compute_speed:
                 for tid, pos in positions.items():
                     if tid in prev_positions:
@@ -702,11 +713,13 @@ class YOLOFlowExtractor:
             cluster_sizes.append(len(ids_this_frame))
             frame_idx += 1
 
+        # Output dict
         result_dict = {
             "video_path": video_path,
             "cluster_size_mean": float(np.mean(cluster_sizes)) if cluster_sizes else 0.0,
             "cluster_size_max": float(np.max(cluster_sizes)) if cluster_sizes else 0.0,
             **{f"{z}_count": int(c) for z, c in zone_counts.items()},
+            **class_counts,
         }
 
         if compute_speed:
@@ -720,6 +733,10 @@ class YOLOFlowExtractor:
             result_dict.update({
                 "mask_coverage_mean": float(np.mean(coverage_pixels)) if coverage_pixels else 0.0,
             })
+
+        # Clean one-line print
+        vid_name = os.path.basename(video_path)
+        print(f"[YOLOFlowExtractor] {vid_name} → {result_dict}")
 
         return result_dict
 
