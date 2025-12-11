@@ -24,7 +24,7 @@ class DataLoader:
         Args:
             config: Configuration object. Uses default if None.
         """
-        self.config = config or Config()
+        self.config = config #or Config()
     
     @staticmethod
     def folder_stats(path: str) -> Tuple[int, float]:

@@ -15,6 +15,136 @@ from PIL import Image
 import torch
 from concurrent.futures import ThreadPoolExecutor
 
+
+# =============================================================================
+# Unified extraction interface
+# =============================================================================
+
+def extract_features(extractor, video_paths: List[str], cache_path: str, 
+                     extract: bool = False) -> pd.DataFrame:
+    """
+    Extract or load features using the given extractor.
+    
+    Args:
+        extractor: Feature extractor instance with extract(video_path) method.
+        video_paths: List of video file paths.
+        cache_path: Path to CSV file (local or Kaggle path).
+        extract: If True, extract features. If False, load from cache_path.
+        
+    Returns:
+        DataFrame with extracted features.
+    """
+    if not extract:
+        print(f"Loading features from {cache_path}")
+        return pd.read_csv(cache_path)
+    
+    print(f"Extracting {extractor.__class__.__name__} features...")
+    
+    # Use batch extraction if available (VideoMAEExtractor)
+    if hasattr(extractor, 'extract_batch'):
+        batch_size = getattr(extractor, 'batch_size', 16)
+        records = []
+        valid_paths = [p for p in video_paths if os.path.exists(p)]
+        
+        for i in tqdm(range(0, len(valid_paths), batch_size), 
+                      desc=f"{extractor.__class__.__name__} (batch={batch_size})"):
+            batch_paths = valid_paths[i:i + batch_size]
+            try:
+                batch_results = extractor.extract_batch(batch_paths)
+                records.extend([r for r in batch_results if r])
+            except Exception as e:
+                print(f"Batch error: {e}")
+                # Fallback to single extraction
+                for path in batch_paths:
+                    try:
+                        feat = extractor.extract(path)
+                        if feat:
+                            records.append(feat)
+                    except Exception as e2:
+                        print(f"Error: {path}: {e2}")
+    else:
+        # Single video extraction (other extractors)
+        records = []
+        for video_path in tqdm(video_paths, desc=extractor.__class__.__name__):
+            if os.path.exists(video_path):
+                try:
+                    feat = extractor.extract(video_path)
+                    if feat:
+                        records.append(feat)
+                except Exception as e:
+                    print(f"Error: {video_path}: {e}")
+    
+    df = pd.DataFrame(records)
+    df.to_csv(cache_path, index=False)
+    print(f"Saved {len(df)} records to {cache_path}")
+    return df
+
+
+def get_all_features(config, video_paths: List[str] = None) -> pd.DataFrame:
+    """
+    Get all enabled features (simple + semantic) with unified interface.
+    
+    Args:
+        config: Configuration object with feature flags and paths.
+        video_paths: List of video paths.
+        
+    Returns:
+        DataFrame with all combined features.
+    """
+    features = None
+    
+    # Feature types configuration: (flag, path, extractor_factory)
+    feature_types = [
+        ('EXTRACT_SIMPLE', 'SIMPLE_FEATURES_PATH', 
+         lambda: SimpleExtractor(config.SAMPLE_INTERVAL, config.TARGET_SIZE)),
+        ('EXTRACT_YOLO', 'YOLO_FEATURES_PATH',
+         lambda: YOLOExtractor(config.SAMPLE_INTERVAL, config.DEVICE)),
+        ('EXTRACT_FLOW', 'FLOW_FEATURES_PATH',
+         lambda: FlowExtractor(config.SAMPLE_INTERVAL)),
+        ('EXTRACT_EMBEDDINGS', 'EMBEDDING_FEATURES_PATH',
+         lambda: EmbeddingExtractor(config.SAMPLE_INTERVAL, config.DEVICE, config.EMBEDDING_DIM)),
+        ('EXTRACT_VIDEOMAE', 'VIDEOMAE_FEATURES_PATH',
+         lambda: VideoMAEExtractor(config.DEVICE, config.VIDEOMAE_DIM, config.VIDEOMAE_NUM_FRAMES)),
+        ('EXTRACT_PE', 'PE_FEATURES_PATH',
+        lambda: PerceptionEncoderExtractor(config.DEVICE, config.PE_NUM_FRAMES, config.PE_DIM)),
+        ('EXTRACT_YOLOFLOW', 'YOLOFLOW_FEATURES_PATH',
+         lambda: YOLOFlowExtractor(config.SAMPLE_INTERVAL, config.DEVICE)),
+    ]
+    
+    for flag_name, path_name, make_extractor in feature_types:
+        extract_flag = getattr(config, flag_name, False)
+        cache_path = getattr(config, path_name, None)
+        
+        if cache_path is None:
+            continue
+        
+        # Check if file exists when not extracting
+        if not extract_flag and not os.path.exists(cache_path):
+            print(f"Warning: {cache_path} not found, skipping {flag_name}")
+            continue
+        
+        extractor = make_extractor()
+        df = extract_features(extractor, video_paths or [], cache_path, extract_flag)
+        
+        # Add video_id for robust merging (filename without path)
+        df['video_id'] = df['video_path'].apply(lambda x: os.path.basename(x))
+        
+        if features is None:
+            features = df
+        else:
+            # Merge on video_id (filename) instead of full path
+            df_to_merge = df.drop(columns=['video_path'])
+            features = features.merge(df_to_merge, on='video_id', how='left')
+        
+        print(f"Loaded {path_name}: {len(df)} rows, {len(df.columns)} columns")
+    
+    # Remove helper column
+    if features is not None and 'video_id' in features.columns:
+        features = features.drop(columns=['video_id'])
+    
+    return features
+
+
 # =============================================================================
 # Base Extractors (CPU-only, lightweight)
 # =============================================================================
@@ -583,7 +713,6 @@ class VideoMAEExtractor:
         return self.extract_batch([video_path])[0]
 
 
-
 class PerceptionEncoderExtractor:
     """
     Super simple video embedding extractor using Meta PE.
@@ -661,132 +790,3 @@ class PerceptionEncoderExtractor:
             "video_path": video_path,
             **{f"pe_{i}": float(feats[i]) for i in range(self.n_components)}
         }
-
-
-# =============================================================================
-# Unified extraction interface
-# =============================================================================
-
-def extract_features(extractor, video_paths: List[str], cache_path: str, 
-                     extract: bool = False) -> pd.DataFrame:
-    """
-    Extract or load features using the given extractor.
-    
-    Args:
-        extractor: Feature extractor instance with extract(video_path) method.
-        video_paths: List of video file paths.
-        cache_path: Path to CSV file (local or Kaggle path).
-        extract: If True, extract features. If False, load from cache_path.
-        
-    Returns:
-        DataFrame with extracted features.
-    """
-    if not extract:
-        print(f"Loading features from {cache_path}")
-        return pd.read_csv(cache_path)
-    
-    print(f"Extracting {extractor.__class__.__name__} features...")
-    
-    # Use batch extraction if available (VideoMAEExtractor)
-    if hasattr(extractor, 'extract_batch'):
-        batch_size = getattr(extractor, 'batch_size', 16)
-        records = []
-        valid_paths = [p for p in video_paths if os.path.exists(p)]
-        
-        for i in tqdm(range(0, len(valid_paths), batch_size), 
-                      desc=f"{extractor.__class__.__name__} (batch={batch_size})"):
-            batch_paths = valid_paths[i:i + batch_size]
-            try:
-                batch_results = extractor.extract_batch(batch_paths)
-                records.extend([r for r in batch_results if r])
-            except Exception as e:
-                print(f"Batch error: {e}")
-                # Fallback to single extraction
-                for path in batch_paths:
-                    try:
-                        feat = extractor.extract(path)
-                        if feat:
-                            records.append(feat)
-                    except Exception as e2:
-                        print(f"Error: {path}: {e2}")
-    else:
-        # Single video extraction (other extractors)
-        records = []
-        for video_path in tqdm(video_paths, desc=extractor.__class__.__name__):
-            if os.path.exists(video_path):
-                try:
-                    feat = extractor.extract(video_path)
-                    if feat:
-                        records.append(feat)
-                except Exception as e:
-                    print(f"Error: {video_path}: {e}")
-    
-    df = pd.DataFrame(records)
-    df.to_csv(cache_path, index=False)
-    print(f"Saved {len(df)} records to {cache_path}")
-    return df
-
-
-def get_all_features(config, video_paths: List[str] = None) -> pd.DataFrame:
-    """
-    Get all enabled features (simple + semantic) with unified interface.
-    
-    Args:
-        config: Configuration object with feature flags and paths.
-        video_paths: List of video paths.
-        
-    Returns:
-        DataFrame with all combined features.
-    """
-    features = None
-    
-    # Feature types configuration: (flag, path, extractor_factory)
-    feature_types = [
-        ('EXTRACT_SIMPLE', 'SIMPLE_FEATURES_PATH', 
-         lambda: SimpleExtractor(config.SAMPLE_INTERVAL, config.TARGET_SIZE)),
-        ('EXTRACT_YOLO', 'YOLO_FEATURES_PATH',
-         lambda: YOLOExtractor(config.SAMPLE_INTERVAL, config.DEVICE)),
-        ('EXTRACT_FLOW', 'FLOW_FEATURES_PATH',
-         lambda: FlowExtractor(config.SAMPLE_INTERVAL)),
-        ('EXTRACT_EMBEDDINGS', 'EMBEDDING_FEATURES_PATH',
-         lambda: EmbeddingExtractor(config.SAMPLE_INTERVAL, config.DEVICE, config.EMBEDDING_DIM)),
-        ('EXTRACT_VIDEOMAE', 'VIDEOMAE_FEATURES_PATH',
-         lambda: VideoMAEExtractor(config.DEVICE, config.VIDEOMAE_DIM, config.VIDEOMAE_NUM_FRAMES)),
-        ('EXTRACT_PE', 'PE_FEATURES_PATH',
-        lambda: PerceptionEncoderExtractor(config.DEVICE, config.PE_NUM_FRAMES, config.PE_DIM)),
-        ('EXTRACT_YOLOFLOW', 'YOLOFLOW_FEATURES_PATH',
-         lambda: YOLOFlowExtractor(config.SAMPLE_INTERVAL, config.DEVICE)),
-    ]
-    
-    for flag_name, path_name, make_extractor in feature_types:
-        extract_flag = getattr(config, flag_name, False)
-        cache_path = getattr(config, path_name, None)
-        
-        if cache_path is None:
-            continue
-        
-        # Check if file exists when not extracting
-        if not extract_flag and not os.path.exists(cache_path):
-            print(f"Warning: {cache_path} not found, skipping {flag_name}")
-            continue
-        
-        extractor = make_extractor()
-        df = extract_features(extractor, video_paths or [], cache_path, extract_flag)
-        
-        # Add video_id for robust merging (filename without path)
-        df['video_id'] = df['video_path'].apply(lambda x: os.path.basename(x))
-        
-        if features is None:
-            features = df
-        else:
-            # Merge on video_id (filename) instead of full path
-            df_to_merge = df.drop(columns=['video_path'])
-            features = features.merge(df_to_merge, on='video_id', how='left')
-        
-        print(f"Loaded {path_name}: {len(df)} rows, {len(df.columns)} columns")
-    
-    # Remove helper column
-    if features is not None and 'video_id' in features.columns:
-        features = features.drop(columns=['video_id'])
-    
-    return features

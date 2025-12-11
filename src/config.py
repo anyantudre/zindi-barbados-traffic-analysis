@@ -104,7 +104,7 @@ class Config:
         'flow_mean', 'flow_std', 'flow_max', 'flow_angle_mean', 'flow_angle_std'
     ]
     
-    # Embedding dimension (first N components)
+    # EfficientNet embedding dimension (first N components)
     EMBEDDING_DIM: int = 64
     
     # VideoMAE parameters
@@ -147,14 +147,6 @@ class Config:
         'responseId', 'view_label', 'videos',
         'video_time', 'datetimestamp_start', 'datetimestamp_end', 'date'
     ]
-    
-    # Model parameters
-    MODEL_PARAMS: dict = {
-        'n_estimators': 200,
-        'max_depth': None,
-        'random_state': 42,
-        'class_weight': 'balanced'
-    }
     
     # Video feature extraction parameters
     SAMPLE_INTERVAL: int = 30
