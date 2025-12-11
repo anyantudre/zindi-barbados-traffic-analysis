@@ -178,6 +178,172 @@ class YOLOExtractor:
         }
 
 
+class YOLOFlowExtractor:
+    """
+    Extract high-value traffic-flow features using YOLO (detection+segmentation)
+    and ByteTrack for speed/flow metrics.
+    """
+
+    VEHICLE_CLASSES = {"car", "truck", "bus", "motorcycle"}
+
+    def __init__(self, sample_interval: int = 5, device: str = "cuda"):
+        self.sample_interval = sample_interval
+        self.device = device
+        self.model = None
+        self.tracker = None
+
+        # Define 3 spatial zones (left, center, right or near/far depending on camera)
+        self.zones = {
+            "zone_1": (0.0, 0.33),
+            "zone_2": (0.33, 0.66),
+            "zone_3": (0.66, 1.0)
+        }
+
+    def _load_model(self):
+        if self.model is None:
+            from ultralytics import YOLO
+            self.model = YOLO("yolo11n-seg.pt")  # segmentation model
+            self.model.to(self.device)
+
+        if self.tracker is None:
+            from ultralytics.utils.trackers.byte_tracker import BYTETracker
+            self.tracker = BYTETracker()
+
+    # -------------------------------------------------------------
+    # Helper: assign centroid to a zone
+    # -------------------------------------------------------------
+    def _get_zone(self, cx_norm):
+        for zname, (low, high) in self.zones.items():
+            if low <= cx_norm < high:
+                return zname
+        return "zone_3"
+
+    def extract(self, video_path: str) -> Dict:
+        import numpy as np
+        import cv2
+
+        self._load_model()
+
+        cap = cv2.VideoCapture(video_path)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps = cap.get(cv2.CAP_PROP_FPS)
+
+        # --------------- Accumulators ---------------
+        speeds = []
+        stopped_counts = 0
+        coverage_pixels = []
+
+        zone_counts = {z: 0 for z in self.zones}
+        entry_counts = 0
+        exit_counts = 0
+
+        all_cluster_sizes = []
+
+        prev_positions = {}  # track_id → (cx, cy)
+
+        frame_idx = 0
+
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            if frame_idx % self.sample_interval != 0:
+                frame_idx += 1
+                continue
+
+            H, W = frame.shape[:2]
+
+            # ---------------- YOLO predict ----------------
+            result = self.model(frame, verbose=False)[0]
+
+            # ---------------- Segmentation mask coverage ----------------
+            if result.masks is not None:
+                mask = result.masks.data.cpu().numpy()
+                coverage_pixels.append(mask.sum() / (H * W))
+
+            # ---------------- Detection + Tracking ----------------
+            boxes_xyxy = []
+            scores = []
+            cls_ids = []
+
+            for box in result.boxes:
+                name = result.names[int(box.cls)]
+                if name not in self.VEHICLE_CLASSES:
+                    continue
+                xyxy = box.xyxy.cpu().numpy()[0]
+                boxes_xyxy.append(xyxy)
+                scores.append(float(box.conf))
+                cls_ids.append(int(box.cls))
+
+            # Track step
+            tracks = self.tracker.update(
+                dets=np.array(boxes_xyxy),
+                scores=np.array(scores),
+                cls_ids=np.array(cls_ids)
+            )
+
+            # ---------------- Per-frame processing ----------------
+            active_ids = []
+
+            for tr in tracks:
+                tid = int(tr.track_id)
+                x1, y1, x2, y2 = tr.tlbr
+                cx = (x1 + x2) / 2
+                cy = (y1 + y2) / 2
+                cx_norm = cx / W
+
+                active_ids.append(tid)
+
+                # zone density
+                z = self._get_zone(cx_norm)
+                zone_counts[z] += 1
+
+                # speed estimation
+                if tid in prev_positions:
+                    px, py = prev_positions[tid]
+                    dist = np.sqrt((cx - px) ** 2 + (cy - py) ** 2)
+                    speed = dist * fps / self.sample_interval
+                    speeds.append(speed)
+                    if speed < 0.5:
+                        stopped_counts += 1
+
+                prev_positions[tid] = (cx, cy)
+
+            # cluster size = number of vehicles in this frame
+            all_cluster_sizes.append(len(active_ids))
+
+            frame_idx += 1
+
+        cap.release()
+
+        # ---------------- Final metrics ----------------
+        flow_rate = np.mean(all_cluster_sizes) * fps / self.sample_interval
+        stopped_ratio = stopped_counts / max(1, sum(all_cluster_sizes))
+
+        return {
+            "video_path": video_path,
+
+            # FLOW
+            "flow_rate": float(flow_rate),
+            "cluster_size_mean": float(np.mean(all_cluster_sizes)),
+            "cluster_size_max": float(np.max(all_cluster_sizes)),
+
+            # SPEED
+            "speed_mean": float(np.mean(speeds)) if speeds else 0.0,
+            "speed_std": float(np.std(speeds)) if speeds else 0.0,
+
+            # STOPPING
+            "stopped_ratio": float(stopped_ratio),
+
+            # ZONE DENSITY
+            **{f"{z}_count": int(c) for z, c in zone_counts.items()},
+
+            # COVERAGE (seg masks)
+            "mask_coverage_mean": float(np.mean(coverage_pixels)) if coverage_pixels else 0.0,
+        }
+
+
 class EmbeddingExtractor:
     """Extract scene embeddings using EfficientNet-B0 with batching."""
     
@@ -586,6 +752,8 @@ def get_all_features(config, video_paths: List[str] = None) -> pd.DataFrame:
          lambda: VideoMAEExtractor(config.DEVICE, config.VIDEOMAE_DIM, config.VIDEOMAE_NUM_FRAMES)),
         ('EXTRACT_PE', 'PE_FEATURES_PATH',
         lambda: PerceptionEncoderExtractor(config.DEVICE, config.PE_NUM_FRAMES, config.PE_DIM)),
+        ('EXTRACT_YOLOFLOW', 'YOLOFLOW_FEATURES_PATH',
+         lambda: YOLOFlowExtractor(config.SAMPLE_INTERVAL, config.DEVICE)),
     ]
     
     for flag_name, path_name, make_extractor in feature_types:

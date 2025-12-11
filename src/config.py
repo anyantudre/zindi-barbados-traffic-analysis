@@ -27,7 +27,7 @@ class Config:
     EXTRACT_EMBEDDINGS: bool = False # EfficientNet embeddings
     EXTRACT_VIDEOMAE: bool = False   # VideoMAE spatio-temporal embeddings
     EXTRACT_PE: bool = False        # Perception Encoder spatio-temporal embeddings
-    
+    EXTRACT_YOLOFLOW: bool = False   # YOLOFlow spatio-temporal embeddings
     # Use full (uncompressed) dataset or compressed
     USE_FULL: bool = False
     
@@ -71,6 +71,7 @@ class Config:
     EMBEDDING_FEATURES_PATH: str = None  # e.g. "/kaggle/input/embedding-features-traffic/embedding_features.csv"
     VIDEOMAE_FEATURES_PATH: str = None  # e.g. "/kaggle/input/videomae-features-traffic/videomae_features.csv"
     PE_FEATURES_PATH: str = None  # e.g. "/kaggle/input/pe-features-traffic/pe_features.csv"
+    YOLOFLOW_FEATURES_PATH: str = None  # e.g. "/kaggle/input/yoloflow-features-traffic/yoloflow_features.csv"
 
     # Column definitions - Temporal features (from preprocessing)
     TEMPORAL_FEATURES: list = ['signaling', 'day_week', 'hour']
@@ -120,6 +121,8 @@ class Config:
             cols.extend([f'vmae_{i}' for i in range(self.VIDEOMAE_DIM)])
         if self.PE_FEATURES_PATH:
             cols.extend([f'pe_{i}' for i in range(self.PE_DIM)])
+        if self.YOLOFLOW_FEATURES_PATH:
+            cols.extend([f'yoloflow_{i}' for i in range(self.YOLOFLOW_DIM)])
         return cols
     
     # Default features (updated dynamically in pipeline.setup())
