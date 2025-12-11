@@ -199,47 +199,70 @@ class SimpleExtractor:
 
 
 class FlowExtractor:
-    """Extract optical flow features using Farneback."""
-    
-    def __init__(self, sample_interval: int = 15):
+    """Extract optical flow features using Farneback, optimized with PyAV and reduced resolution."""
+
+    def __init__(self, sample_interval: int = 15, flow_resize: int = 256):
         self.sample_interval = sample_interval
-    
+        self.flow_resize = flow_resize  # internal resolution for faster flow
+
     def extract(self, video_path: str) -> Dict:
         """Extract optical flow features from a single video."""
-        cap = cv2.VideoCapture(video_path)
-        frame_idx = 0
+        container = av.open(video_path)
+
         prev_gray = None
-        flow_mags, flow_angles = [], []
-        
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            
-            if frame_idx % self.sample_interval == 0:
-                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                if prev_gray is not None:
-                    flow = cv2.calcOpticalFlowFarneback(
-                        prev_gray, gray, None,
-                        pyr_scale=0.5, levels=3, winsize=15,
-                        iterations=3, poly_n=5, poly_sigma=1.2, flags=0
-                    )
-                    mag, ang = cv2.cartToPolar(flow[..., 0], flow[..., 1])
-                    flow_mags.append(mag.mean())
-                    flow_angles.append(ang.mean())
-                prev_gray = gray
-            
+        flow_mags = []
+        flow_angles = []
+
+        frame_idx = 0
+
+        # Pre-allocated Farneback buffers
+        fb_params = dict(
+            pyr_scale=0.5, 
+            levels=3, 
+            winsize=15,
+            iterations=3,
+            poly_n=5,
+            poly_sigma=1.2,
+            flags=0
+        )
+
+        for frame in container.decode(video=0):
+            if frame_idx % self.sample_interval != 0:
+                frame_idx += 1
+                continue
+
+            # PyAV gives ndarray directly, faster than cv2.VideoCapture
+            img = frame.to_ndarray(format="bgr24")
+
+            # grayscale
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+            # reduced resolution inside the algorithm (faster flow)
+            if self.flow_resize is not None:
+                gray_small = cv2.resize(gray, (self.flow_resize, self.flow_resize))
+            else:
+                gray_small = gray
+
+            if prev_gray is not None:
+                flow = cv2.calcOpticalFlowFarneback(
+                    prev_gray, gray_small, None, **fb_params
+                )
+                mag, ang = cv2.cartToPolar(flow[..., 0], flow[..., 1])
+                flow_mags.append(mag.mean())
+                flow_angles.append(ang.mean())
+
+            prev_gray = gray_small
             frame_idx += 1
-        
-        cap.release()
-        
+
+        container.close()
+
         return {
             "video_path": video_path,
-            "flow_mean": np.mean(flow_mags) if flow_mags else 0,
-            "flow_std": np.std(flow_mags) if flow_mags else 0,
-            "flow_max": np.max(flow_mags) if flow_mags else 0,
-            "flow_angle_mean": np.mean(flow_angles) if flow_angles else 0,
-            "flow_angle_std": np.std(flow_angles) if flow_angles else 0,
+            "flow_mean": float(np.mean(flow_mags)) if flow_mags else 0.0,
+            "flow_std": float(np.std(flow_mags)) if flow_mags else 0.0,
+            "flow_max": float(np.max(flow_mags)) if flow_mags else 0.0,
+            "flow_angle_mean": float(np.mean(flow_angles)) if flow_angles else 0.0,
+            "flow_angle_std": float(np.std(flow_angles)) if flow_angles else 0.0,
         }
 
 
