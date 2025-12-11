@@ -145,6 +145,71 @@ def get_all_features(config, video_paths: List[str] = None) -> pd.DataFrame:
     return features
 
 
+def _read_frames_pyav(video_path: str, num_frames: int = 16) -> List[np.ndarray]:
+    """Read frames using PyAV (10-20x faster than OpenCV for seeking)."""
+    try:
+        import av
+    except ImportError:
+        # Fallback to OpenCV if PyAV not available
+        print("PyAV not available, falling back to OpenCV")
+        return _read_frames_cv2(video_path, num_frames)
+    
+    try:
+        container = av.open(video_path)
+        stream = container.streams.video[0]
+        total_frames = stream.frames or int(stream.duration * stream.average_rate)
+        
+        if total_frames <= 0:
+            container.close()
+            return []
+        
+        indices = set(np.linspace(0, max(0, total_frames - 1), num_frames, dtype=int))
+        frames = []
+        
+        for i, frame in enumerate(container.decode(video=0)):
+            if i in indices:
+                frames.append(frame.to_rgb().to_ndarray())
+            if len(frames) >= num_frames:
+                break
+        
+        container.close()
+        
+        # Pad if needed
+        while len(frames) < num_frames:
+            frames.append(frames[-1] if frames else np.zeros((224, 224, 3), dtype=np.uint8))
+        
+        return frames[:num_frames]
+    except Exception:
+        print("Error reading frames with PyAV, falling back to OpenCV")
+        return []
+
+
+def _read_frames_cv2(video_path: str, num_frames: int = 16) -> List[np.ndarray]:
+    """Fallback OpenCV reader."""
+    cap = cv2.VideoCapture(video_path)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    
+    if total_frames <= 0:
+        cap.release()
+        print("Error reading frames with OpenCV")
+        return []
+    
+    indices = np.linspace(0, total_frames - 1, num_frames, dtype=int)
+    frames = []
+    
+    for idx in indices:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+        ret, frame = cap.read()
+        if ret:
+            frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+    cap.release()
+    
+    while len(frames) < num_frames:
+        frames.append(frames[-1] if frames else np.zeros((224, 224, 3), dtype=np.uint8))
+    
+    return frames[:num_frames]
+
+
 # =============================================================================
 # Base Extractors (CPU-only, lightweight)
 # =============================================================================
@@ -237,11 +302,10 @@ class SimpleExtractor:
         }
 
 
-
 class FlowExtractor:
     """Extract optical flow features using Farneback, optimized with PyAV and reduced resolution."""
 
-    def __init__(self, sample_interval: int = 15, flow_resize: int = 256):
+    def __init__(self, sample_interval: int = 15, flow_resize: int = 128):
         self.sample_interval = sample_interval
         self.flow_resize = flow_resize  # internal resolution for faster flow
 
@@ -366,6 +430,7 @@ class YOLOExtractor:
             "avg_bbox_area": np.mean(bbox_areas) if bbox_areas else 0,
             **{f"{k}_count": v for k, v in vehicle_types.items()}
         }
+
 
 class YOLOFlowExtractor:
     """
@@ -543,7 +608,6 @@ class YOLOFlowExtractor:
         return result_dict
 
 
-
 class EmbeddingExtractor:
     """Extract scene embeddings using EfficientNet-B0 with batching."""
     
@@ -614,71 +678,6 @@ class EmbeddingExtractor:
             **{f"emb_mean_{i}": emb[:, i].mean() for i in range(n)},
             **{f"emb_std_{i}": emb[:, i].std() for i in range(n)}
         }
-
-
-def _read_frames_pyav(video_path: str, num_frames: int = 16) -> List[np.ndarray]:
-    """Read frames using PyAV (10-20x faster than OpenCV for seeking)."""
-    try:
-        import av
-    except ImportError:
-        # Fallback to OpenCV if PyAV not available
-        print("PyAV not available, falling back to OpenCV")
-        return _read_frames_cv2(video_path, num_frames)
-    
-    try:
-        container = av.open(video_path)
-        stream = container.streams.video[0]
-        total_frames = stream.frames or int(stream.duration * stream.average_rate)
-        
-        if total_frames <= 0:
-            container.close()
-            return []
-        
-        indices = set(np.linspace(0, max(0, total_frames - 1), num_frames, dtype=int))
-        frames = []
-        
-        for i, frame in enumerate(container.decode(video=0)):
-            if i in indices:
-                frames.append(frame.to_rgb().to_ndarray())
-            if len(frames) >= num_frames:
-                break
-        
-        container.close()
-        
-        # Pad if needed
-        while len(frames) < num_frames:
-            frames.append(frames[-1] if frames else np.zeros((224, 224, 3), dtype=np.uint8))
-        
-        return frames[:num_frames]
-    except Exception:
-        print("Error reading frames with PyAV, falling back to OpenCV")
-        return []
-
-
-def _read_frames_cv2(video_path: str, num_frames: int = 16) -> List[np.ndarray]:
-    """Fallback OpenCV reader."""
-    cap = cv2.VideoCapture(video_path)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    
-    if total_frames <= 0:
-        cap.release()
-        print("Error reading frames with OpenCV")
-        return []
-    
-    indices = np.linspace(0, total_frames - 1, num_frames, dtype=int)
-    frames = []
-    
-    for idx in indices:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-        ret, frame = cap.read()
-        if ret:
-            frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-    cap.release()
-    
-    while len(frames) < num_frames:
-        frames.append(frames[-1] if frames else np.zeros((224, 224, 3), dtype=np.uint8))
-    
-    return frames[:num_frames]
 
 
 class VideoMAEExtractor:
