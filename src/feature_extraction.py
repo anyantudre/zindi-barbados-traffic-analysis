@@ -207,6 +207,7 @@ class FlowExtractor:
 
     def extract(self, video_path: str) -> Dict:
         """Extract optical flow features from a single video."""
+        import av
         container = av.open(video_path)
 
         prev_gray = None
