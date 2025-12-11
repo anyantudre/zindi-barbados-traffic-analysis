@@ -535,10 +535,11 @@ class YOLOExtractor:
 
     VEHICLE_CLASSES = {"car", "truck", "bus", "motorcycle"}
 
-    def __init__(self, sample_interval: int = 15, device: str = "cuda"):
+    def __init__(self, sample_interval: int = 15, device: str = "cuda", imgsz: int = 640):
         self.sample_interval = sample_interval
         self.device = device
         self.model = None
+        self.imgsz = imgsz
 
     def _load_model(self):
         if self.model is None:
@@ -564,7 +565,8 @@ class YOLOExtractor:
             source=video_path,
             stream=True,
             verbose=False,
-            vid_stride=self.sample_interval
+            vid_stride=self.sample_interval,
+            imgsz=self.imgsz
         )
 
         for result in results:
@@ -605,13 +607,13 @@ class YOLOExtractor:
         traffic_growth_ratio = (last_count - first_count) / max(1, first_count)
 
         # Linear regression slope for per-frame counts
-        if len(frame_object_counts) > 1:
-            slope, _, _, _, _ = linregress(range(len(frame_object_counts)), frame_object_counts)
-        else:
-            slope = 0.0
+        # if len(frame_object_counts) > 1:
+        #     slope, _, _, _, _ = linregress(range(len(frame_object_counts)), frame_object_counts)
+        # else:
+        #     slope = 0.0
 
-        traffic_percentile_change = np.percentile(frame_object_counts, 90) - np.percentile(frame_object_counts, 10) \
-            if frame_object_counts else 0.0
+        # traffic_percentile_change = np.percentile(frame_object_counts, 90) - np.percentile(frame_object_counts, 10) \
+        #     if frame_object_counts else 0.0
 
         result_dict = {
             "video_path": video_path,
@@ -624,8 +626,8 @@ class YOLOExtractor:
             "avg_bbox_aspect_ratio": float(np.mean(bbox_aspect_ratios)) if bbox_aspect_ratios else 0.0,
             "object_count_evolution": frame_object_counts,
             "traffic_growth_ratio": float(traffic_growth_ratio),
-            "traffic_slope": float(slope),
-            "traffic_percentile_change": float(traffic_percentile_change),
+            # "traffic_slope": float(slope),
+            # "traffic_percentile_change": float(traffic_percentile_change),
             **class_counts,
             **vehicle_counts
         }
