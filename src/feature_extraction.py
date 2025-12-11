@@ -531,60 +531,111 @@ class FlowExtractor:
 # =============================================================================
 
 class YOLOExtractor:
-    """Extract vehicle detection features using YOLOv8 native video streaming."""
-    
+    """Extract dynamic object detection features using YOLOv11 native video streaming."""
+
     VEHICLE_CLASSES = {"car", "truck", "bus", "motorcycle"}
-    
+
     def __init__(self, sample_interval: int = 15, device: str = "cuda"):
         self.sample_interval = sample_interval
         self.device = device
         self.model = None
-    
+
     def _load_model(self):
         if self.model is None:
             from ultralytics import YOLO
-            self.model = YOLO("yolov8n.pt")
+            self.model = YOLO("yolo11n.pt")
             self.model.to(self.device)
-    
-    def extract(self, video_path: str) -> Dict:
+
+    def extract(self, video_path: str) -> dict:
         """Extract YOLO features using native video streaming (GPU optimized)."""
+        import numpy as np
+        from scipy.stats import linregress
+        import os
+
         self._load_model()
-        
-        vehicle_counts, bbox_areas = [], []
-        vehicle_types = {k: 0 for k in self.VEHICLE_CLASSES}
-        
-        # Use YOLO's native video streaming - much faster
+
+        class_counts = {}
+        vehicle_counts = {v: 0 for v in self.VEHICLE_CLASSES}
+        frame_object_counts = []
+        bbox_areas = []
+        bbox_aspect_ratios = []
+
         results = self.model.predict(
             source=video_path,
             stream=True,
             verbose=False,
-            vid_stride=self.sample_interval  # Skip frames natively
+            vid_stride=self.sample_interval
         )
-        
+
         for result in results:
-            count = 0
+            frame_count = 0
+            frame_bbox_areas = []
+
             for box in result.boxes:
-                name = result.names[int(box.cls)]
-                if name in self.VEHICLE_CLASSES:
-                    count += 1
-                    vehicle_types[name] += 1
-                    xyxy = box.xyxy.cpu().numpy()[0]
-                    bbox_areas.append((xyxy[2] - xyxy[0]) * (xyxy[3] - xyxy[1]))
-            vehicle_counts.append(count)
-        
-        if not vehicle_counts:
-            return {"video_path": video_path, "vehicle_count_mean": 0, "vehicle_count_std": 0,
-                    "vehicle_count_max": 0, "avg_bbox_area": 0,
-                    **{f"{k}_count": 0 for k in self.VEHICLE_CLASSES}}
-        
-        return {
+                cls_id = int(box.cls)
+                cls_name = result.names[cls_id]
+
+                # Dynamic class counts
+                key = f"class_count_{cls_name}"
+                class_counts[key] = class_counts.get(key, 0) + 1
+
+                # Vehicle counts
+                if cls_name in self.VEHICLE_CLASSES:
+                    vehicle_counts[cls_name] += 1
+
+                # bbox area & aspect ratio
+                xyxy = box.xyxy.cpu().numpy()[0]
+                width, height = xyxy[2] - xyxy[0], xyxy[3] - xyxy[1]
+                area = width * height
+                frame_bbox_areas.append(area)
+                bbox_areas.append(area)
+                if height > 0:
+                    bbox_aspect_ratios.append(width / height)
+                frame_count += 1
+
+            frame_object_counts.append(frame_count)
+
+        # Aggregate features
+        total_objects = sum(frame_object_counts)
+        total_bbox_area = sum(bbox_areas)
+
+        # Traffic growth metrics
+        first_count = frame_object_counts[0] if frame_object_counts else 0
+        last_count = frame_object_counts[-1] if frame_object_counts else 0
+        traffic_growth_ratio = (last_count - first_count) / max(1, first_count)
+
+        # Linear regression slope for per-frame counts
+        if len(frame_object_counts) > 1:
+            slope, _, _, _, _ = linregress(range(len(frame_object_counts)), frame_object_counts)
+        else:
+            slope = 0.0
+
+        traffic_percentile_change = np.percentile(frame_object_counts, 90) - np.percentile(frame_object_counts, 10) \
+            if frame_object_counts else 0.0
+
+        result_dict = {
             "video_path": video_path,
-            "vehicle_count_mean": np.mean(vehicle_counts),
-            "vehicle_count_std": np.std(vehicle_counts),
-            "vehicle_count_max": np.max(vehicle_counts),
-            "avg_bbox_area": np.mean(bbox_areas) if bbox_areas else 0,
-            **{f"{k}_count": v for k, v in vehicle_types.items()}
+            "total_objects": total_objects,
+            "object_count_mean": float(np.mean(frame_object_counts)) if frame_object_counts else 0.0,
+            "object_count_std": float(np.std(frame_object_counts)) if frame_object_counts else 0.0,
+            "object_count_max": int(np.max(frame_object_counts)) if frame_object_counts else 0,
+            "avg_bbox_area": float(np.mean(bbox_areas)) if bbox_areas else 0.0,
+            "total_bbox_area": float(total_bbox_area),
+            "avg_bbox_aspect_ratio": float(np.mean(bbox_aspect_ratios)) if bbox_aspect_ratios else 0.0,
+            "object_count_evolution": frame_object_counts,
+            "traffic_growth_ratio": float(traffic_growth_ratio),
+            "traffic_slope": float(slope),
+            "traffic_percentile_change": float(traffic_percentile_change),
+            **class_counts,
+            **vehicle_counts
         }
+
+        # Print one line per video
+        vid_name = os.path.basename(video_path)
+        print(f"[YOLOExtractor] {vid_name} → {result_dict}")
+
+        return result_dict
+
 
 
 class YOLOFlowExtractor:
