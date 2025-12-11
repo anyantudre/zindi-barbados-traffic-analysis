@@ -204,6 +204,14 @@ class TrainingPipeline:
         Returns:
             self
         """
+        if any(getattr(self.config, extract_flag) for extract_flag in self.config.EXTRACT_LIST):
+            print("Please extract features first. Run the feature extraction pipeline first.")
+            print("Setting all extract flags to False")
+            for extract_flag in self.config.EXTRACT_LIST:
+                if getattr(self.config, extract_flag):
+                    setattr(self.config, extract_flag, False)
+            self.config.save_config()
+
         self.setup()
         self.load_data()
         self.preprocess()

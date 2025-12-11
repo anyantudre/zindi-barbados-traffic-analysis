@@ -270,8 +270,11 @@ class DataPreprocessor:
         
         # Split into train, validation, and test
         training_df = shifted_df[shifted_df['cycle_phase'] == 'train']
+        training_df = training_df.sample(frac=1)
+
         validation_df = shifted_df[shifted_df['cycle_phase'] == 'test_input_15']
         testing_df = shifted_df[shifted_df['cycle_phase'] == 'test_output_5']
+        
         
         return training_df, validation_df, testing_df
 

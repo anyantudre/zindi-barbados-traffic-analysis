@@ -28,6 +28,17 @@ class Config:
     EXTRACT_VIDEOMAE: bool = False   # VideoMAE spatio-temporal embeddings
     EXTRACT_PE: bool = False        # Perception Encoder spatio-temporal embeddings
     EXTRACT_YOLOFLOW: bool = False   # YOLOFlow spatio-temporal embeddings
+
+    EXTRACT_LIST: list = [
+        'EXTRACT_SIMPLE',
+        'EXTRACT_YOLO',
+        'EXTRACT_FLOW',
+        'EXTRACT_EMBEDDINGS',
+        'EXTRACT_VIDEOMAE',
+        'EXTRACT_PE',
+        'EXTRACT_YOLOFLOW'
+    ]
+
     # Use full (uncompressed) dataset or compressed
     USE_FULL: bool = False
     
