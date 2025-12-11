@@ -589,9 +589,7 @@ class YOLOExtractor:
 
 class YOLOFlowExtractor:
     """
-    Traffic-flow feature extractor with two modes:
-      - fast: detection + zones + cluster sizes
-      - deep: segmentation masks + speed estimation via track history
+    Traffic-flow feature extractor using YOLO11 tracking with persistence.
     """
 
     VEHICLE_CLASSES = {"car", "truck", "bus", "motorcycle"}
@@ -633,7 +631,6 @@ class YOLOFlowExtractor:
         import numpy as np
 
         self._load_model()
-
         compute_masks = mode == "deep"
         compute_speed = mode == "deep"
 
@@ -643,73 +640,68 @@ class YOLOFlowExtractor:
 
         speed_dists = []
         stopped_counts = 0
-
-        # For tracking history
         prev_positions = {}
 
-        # Use the track API instead of manual tracker object
+        frame_idx = 0
+
+        # Ensure persist=True so tracker IDs are kept across frames
         results = self.model.track(
             source=video_path,
-            stream=True,
+            persist=True,
             conf=self.conf,
             imgsz=self.imgsz,
+            vid_stride=self.sample_interval,
             device=self.device,
-            verbose=False,
         )
-
-        frame_idx = 0
 
         for result in results:
             frame = result.orig_img
             H, W = frame.shape[:2]
 
-            # segmentation masks (optional)
             if compute_masks and result.masks is not None and (frame_idx % self.mask_interval == 0):
                 m = result.masks.data
                 coverage_pixels.append(float(m.sum()) / (H * W))
 
-            # detection + tracking IDs
-            ids = []
+            ids_this_frame = []
             positions = {}
 
-            for box, track_id in zip(result.boxes, result.track_id):
-                # track_id might be None if not tracked
-                if track_id is None:
-                    continue
-                tid = int(track_id)
+            if result.boxes is not None:
+                # If IDs exist they will be in boxes.id
+                try:
+                    track_ids = result.boxes.id.int().cpu().tolist()
+                except Exception:
+                    track_ids = [None] * len(result.boxes)
 
-                name = result.names[int(box.cls)]
-                if name not in self.VEHICLE_CLASSES:
-                    continue
+                for box, tid in zip(result.boxes, track_ids):
+                    name = result.names[int(box.cls)]
+                    if name not in self.VEHICLE_CLASSES:
+                        continue
 
-                xyxy = box.xyxy.cpu().numpy()[0]
-                x1, y1, x2, y2 = xyxy
-                cx = (x1 + x2) / 2
-                cx_norm = cx / W
+                    xyxy = box.xyxy.cpu().numpy()[0]
+                    x1, y1, x2, y2 = xyxy
+                    cx = (x1 + x2) / 2
+                    cx_norm = cx / W
 
-                ids.append(tid)
-                positions[tid] = (cx, (y1 + y2) / 2)
+                    ids_this_frame.append(tid)
+                    if tid is not None:
+                        positions[tid] = (cx, (y1 + y2) / 2)
 
-                # zone counts
-                zone_counts[self._get_zone(cx_norm)] += 1
+                    zone_counts[self._get_zone(cx_norm)] += 1
 
-            # speed / stopped counts (optional)
             if compute_speed:
                 for tid, pos in positions.items():
                     if tid in prev_positions:
                         px, py = prev_positions[tid]
                         cx, cy = pos
-                        dist = np.sqrt((cx - px) ** 2 + (cy - py) ** 2)
+                        dist = np.sqrt((cx - px)**2 + (cy - py)**2)
                         speed_dists.append(dist)
                         if dist < 0.5:
                             stopped_counts += 1
-
                 prev_positions.update(positions)
 
-            cluster_sizes.append(len(ids))
+            cluster_sizes.append(len(ids_this_frame))
             frame_idx += 1
 
-        # final metrics
         result_dict = {
             "video_path": video_path,
             "cluster_size_mean": float(np.mean(cluster_sizes)) if cluster_sizes else 0.0,
@@ -730,6 +722,7 @@ class YOLOFlowExtractor:
             })
 
         return result_dict
+
 
 
 
