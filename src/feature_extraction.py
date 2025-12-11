@@ -150,55 +150,90 @@ def get_all_features(config, video_paths: List[str] = None) -> pd.DataFrame:
 # =============================================================================
 
 class SimpleExtractor:
-    """Fast simple statistical features using PyAV + Welford stream stats."""
-    
-    def __init__(self, sample_interval: int = 30, target_size: int = 224):
+    """Fast, minimalist statistical features."""
+
+    def __init__(self, sample_interval=30, target_size=224):
         self.sample_interval = sample_interval
         self.target_size = target_size
 
-    def extract(self, video_path: str) -> Dict:
-        import av
-        container = av.open(video_path)
+    def extract(self, video_path: str):
+        cap = cv2.VideoCapture(video_path)
+        frame_idx = 0
+        prev_frame = None
 
-        mean = np.zeros(3, dtype=np.float64)
-        M2 = np.zeros(3, dtype=np.float64)
+        # Running stats
+        brightness_vals = []
+        diff_vals = []
+        sat_vals = []
+        edge_vals = []
+        blur_vals = []
+        entropy_vals = []
+        dark_vals = []
+
         sample_count = 0
+        
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
 
-        resize = self.target_size is not None
+            if frame_idx % self.sample_interval == 0:
+                if self.target_size:
+                    frame = cv2.resize(frame, (self.target_size, self.target_size))
 
-        for idx, frame in enumerate(container.decode(video=0)):
-            if idx % self.sample_interval != 0:
-                continue
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-            img = frame.to_ndarray(format="bgr24")
+                # 1. brightness
+                brightness_vals.append(gray.mean())
 
-            if resize:
-                img = cv2.resize(img, (self.target_size, self.target_size))
+                # 2. motion diff
+                if prev_frame is not None:
+                    diff_vals.append(np.mean(np.abs(gray - prev_frame)))
 
-            sample_mean = img.reshape(-1, 3).mean(axis=0)
+                # 3. color saturation
+                hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+                sat_vals.append(hsv[:, :, 1].mean())
 
-            sample_count += 1
-            delta = sample_mean - mean
-            mean += delta / sample_count
-            M2 += delta * (sample_mean - mean)
+                # 4. edges
+                edges = cv2.Canny(gray, 100, 200)
+                edge_vals.append(edges.mean())
 
-        container.close()
+                # 5. blurriness
+                blur_vals.append(cv2.Laplacian(gray, cv2.CV_64F).var())
 
+                # 6. entropy
+                hist, _ = np.histogram(gray, bins=256, range=(0, 256), density=True)
+                entropy_vals.append(-(hist * np.log2(hist + 1e-9)).sum())
+
+                # 7. dark channel (haze / shadow score)
+                dark_vals.append(np.min(frame, axis=2).mean())
+
+                prev_frame = gray.copy()
+                sample_count += 1
+
+            frame_idx += 1
+
+        cap.release()
         if sample_count == 0:
             return None
-
-        std = np.sqrt(M2 / sample_count)
 
         return {
             "video_path": video_path,
             "num_frames_sampled": sample_count,
-            "mean_r": float(mean[2]),
-            "mean_g": float(mean[1]),
-            "mean_b": float(mean[0]),
-            "std_r": float(std[2]),
-            "std_g": float(std[1]),
-            "std_b": float(std[0]),
-            "brightness": float(mean.mean()),
+
+            "brightness_mean": float(np.mean(brightness_vals)),
+            "brightness_std": float(np.std(brightness_vals)),
+
+            "motion_mean": float(np.mean(diff_vals)) if diff_vals else 0,
+            "motion_std": float(np.std(diff_vals)) if diff_vals else 0,
+
+            "sat_mean": float(np.mean(sat_vals)),
+            "sat_std": float(np.std(sat_vals)),
+
+            "edge_density": float(np.mean(edge_vals)),
+            "blur_mean": float(np.mean(blur_vals)),
+            "entropy_mean": float(np.mean(entropy_vals)),
+            "dark_channel_mean": float(np.mean(dark_vals)),
         }
 
 
