@@ -214,92 +214,246 @@ def _read_frames_cv2(video_path: str, num_frames: int = 16) -> List[np.ndarray]:
 # Base Extractors (CPU-only, lightweight)
 # =============================================================================
 
-class SimpleExtractor:
-    """Fast, minimalist statistical features."""
+# class SimpleExtractor:
+#     """Fast, minimalist statistical features."""
 
-    def __init__(self, sample_interval=30, target_size=224):
+#     def __init__(self, sample_interval=30, target_size=224):
+#         self.sample_interval = sample_interval
+#         self.target_size = target_size
+
+#     def extract(self, video_path: str):
+#         cap = cv2.VideoCapture(video_path)
+#         frame_idx = 0
+#         prev_frame = None
+
+#         # Running stats
+#         brightness_vals = []
+#         diff_vals = []
+#         sat_vals = []
+#         edge_vals = []
+#         blur_vals = []
+#         entropy_vals = []
+#         dark_vals = []
+
+#         sample_count = 0
+        
+#         while True:
+#             ret, frame = cap.read()
+#             if not ret:
+#                 break
+
+#             if frame_idx % self.sample_interval == 0:
+#                 if self.target_size:
+#                     frame = cv2.resize(frame, (self.target_size, self.target_size))
+
+#                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+#                 # 1. brightness
+#                 brightness_vals.append(gray.mean())
+
+#                 # 2. motion diff
+#                 if prev_frame is not None:
+#                     diff_vals.append(np.mean(np.abs(gray - prev_frame)))
+
+#                 # 3. color saturation
+#                 hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+#                 sat_vals.append(hsv[:, :, 1].mean())
+
+#                 # 4. edges
+#                 edges = cv2.Canny(gray, 100, 200)
+#                 edge_vals.append(edges.mean())
+
+#                 # 5. blurriness
+#                 blur_vals.append(cv2.Laplacian(gray, cv2.CV_64F).var())
+
+#                 # 6. entropy
+#                 hist, _ = np.histogram(gray, bins=256, range=(0, 256), density=True)
+#                 entropy_vals.append(-(hist * np.log2(hist + 1e-9)).sum())
+
+#                 # 7. dark channel (haze / shadow score)
+#                 dark_vals.append(np.min(frame, axis=2).mean())
+
+#                 prev_frame = gray.copy()
+#                 sample_count += 1
+
+#             frame_idx += 1
+
+#         cap.release()
+#         if sample_count == 0:
+#             return None
+
+#         return {
+#             "video_path": video_path,
+#             "num_frames_sampled": sample_count,
+
+#             "brightness_mean": float(np.mean(brightness_vals)),
+#             "brightness_std": float(np.std(brightness_vals)),
+
+#             "motion_mean": float(np.mean(diff_vals)) if diff_vals else 0,
+#             "motion_std": float(np.std(diff_vals)) if diff_vals else 0,
+
+#             "sat_mean": float(np.mean(sat_vals)),
+#             "sat_std": float(np.std(sat_vals)),
+
+#             "edge_density": float(np.mean(edge_vals)),
+#             "blur_mean": float(np.mean(blur_vals)),
+#             "entropy_mean": float(np.mean(entropy_vals)),
+#             "dark_channel_mean": float(np.mean(dark_vals)),
+#         }
+
+class SimpleExtractor:
+    """
+    Extremely lightweight feature extractor for roundabout traffic videos.
+    All operations run on tiny grayscale frames with minimal computation.
+    Each block is optional.
+    """
+
+    def __init__(
+        self,
+        sample_interval=10,
+        tiny_size=64,
+
+        use_intensity_motion=True,
+        use_edge_activity=True,
+        use_directionality=True,
+        use_brightness=True,
+        use_color_dominance=True,
+        use_scene_occupancy=True,
+        use_blob_count=True,
+        use_frame_diff_var=True,
+    ):
         self.sample_interval = sample_interval
-        self.target_size = target_size
+        self.tiny_size = tiny_size
+
+        # toggles
+        self.use_intensity_motion = use_intensity_motion
+        self.use_edge_activity = use_edge_activity
+        self.use_directionality = use_directionality
+        self.use_brightness = use_brightness
+        self.use_color_dominance = use_color_dominance
+        self.use_scene_occupancy = use_scene_occupancy
+        self.use_blob_count = use_blob_count
+        self.use_frame_diff_var = use_frame_diff_var
 
     def extract(self, video_path: str):
-        cap = cv2.VideoCapture(video_path)
+        container = av.open(video_path)
+
+        prev_gray = None
+        prev_small = None
+
+        # storage
+        motion = []
+        edges = []
+        mag_vals = []
+        ang_vals = []
+        brightness = []
+        colors = []
+        occupancy = []
+        blob_counts = []
+        diff_vars = []
+
         frame_idx = 0
-        prev_frame = None
 
-        # Running stats
-        brightness_vals = []
-        diff_vals = []
-        sat_vals = []
-        edge_vals = []
-        blur_vals = []
-        entropy_vals = []
-        dark_vals = []
+        for frame in container.decode(video=0):
 
-        sample_count = 0
-        
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
+            if frame_idx % self.sample_interval != 0:
+                frame_idx += 1
+                continue
 
-            if frame_idx % self.sample_interval == 0:
-                if self.target_size:
-                    frame = cv2.resize(frame, (self.target_size, self.target_size))
+            img = frame.to_ndarray(format="bgr24")
 
-                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            # ultra-fast: precompute grayscale tiny frame
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            tiny = cv2.resize(gray, (self.tiny_size, self.tiny_size))
 
-                # 1. brightness
-                brightness_vals.append(gray.mean())
+            # 1) intensity motion (difference)
+            if self.use_intensity_motion and prev_gray is not None:
+                motion.append(cv2.absdiff(tiny, prev_small).mean())
 
-                # 2. motion diff
-                if prev_frame is not None:
-                    diff_vals.append(np.mean(np.abs(gray - prev_frame)))
+            # 2) edge activity (tiny)
+            if self.use_edge_activity:
+                e = cv2.Canny(tiny, 30, 90)
+                edges.append(e.mean())
 
-                # 3. color saturation
-                hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-                sat_vals.append(hsv[:, :, 1].mean())
+            # 3) directionality (super tiny flow)
+            if self.use_directionality and prev_small is not None:
+                flow = cv2.calcOpticalFlowFarneback(
+                    prev_small, tiny, None,
+                    pyr_scale=0.5, levels=1,
+                    winsize=9, iterations=1,
+                    poly_n=5, poly_sigma=1.1, flags=0,
+                )
+                mag, ang = cv2.cartToPolar(flow[..., 0], flow[..., 1])
+                mag_vals.append(mag.mean())
+                ang_vals.append(ang.mean())
 
-                # 4. edges
-                edges = cv2.Canny(gray, 100, 200)
-                edge_vals.append(edges.mean())
+            # 4) brightness
+            if self.use_brightness:
+                brightness.append(tiny.mean())
 
-                # 5. blurriness
-                blur_vals.append(cv2.Laplacian(gray, cv2.CV_64F).var())
+            # 5) color dominance (only sample 32x32 for RGB)
+            if self.use_color_dominance:
+                small_rgb = cv2.resize(img, (32, 32))
+                cm = small_rgb.mean(axis=(0, 1))
+                colors.append(cm)
 
-                # 6. entropy
-                hist, _ = np.histogram(gray, bins=256, range=(0, 256), density=True)
-                entropy_vals.append(-(hist * np.log2(hist + 1e-9)).sum())
+            # 6) occupancy (binary threshold)
+            if self.use_scene_occupancy:
+                th = tiny.mean()
+                occupancy.append(float((tiny > th).mean()))
 
-                # 7. dark channel (haze / shadow score)
-                dark_vals.append(np.min(frame, axis=2).mean())
+            # 7) blob count (fast 32x32)
+            if self.use_blob_count:
+                small32 = cv2.resize(tiny, (32, 32))
+                _, bin_ = cv2.threshold(small32, small32.mean(), 255, cv2.THRESH_BINARY)
+                num_labels, _, _, _ = cv2.connectedComponentsWithStats(bin_)
+                blob_counts.append(num_labels)
 
-                prev_frame = gray.copy()
-                sample_count += 1
+            # 8) frame diff variance (variation measure)
+            if self.use_frame_diff_var and prev_small is not None:
+                diff = cv2.absdiff(tiny, prev_small)
+                diff_vars.append(diff.var())
 
+            prev_gray = gray
+            prev_small = tiny
             frame_idx += 1
 
-        cap.release()
-        if sample_count == 0:
-            return None
+        container.close()
 
-        return {
-            "video_path": video_path,
-            "num_frames_sampled": sample_count,
+        out = {"video_path": video_path}
 
-            "brightness_mean": float(np.mean(brightness_vals)),
-            "brightness_std": float(np.std(brightness_vals)),
+        # finalize
+        if self.use_intensity_motion:
+            out["motion_mean"] = float(np.mean(motion)) if motion else 0.0
 
-            "motion_mean": float(np.mean(diff_vals)) if diff_vals else 0,
-            "motion_std": float(np.std(diff_vals)) if diff_vals else 0,
+        if self.use_edge_activity:
+            out["edge_mean"] = float(np.mean(edges)) if edges else 0.0
 
-            "sat_mean": float(np.mean(sat_vals)),
-            "sat_std": float(np.std(sat_vals)),
+        if self.use_directionality:
+            out["flow_mag_mean"] = float(np.mean(mag_vals)) if mag_vals else 0.0
+            out["flow_ang_mean"] = float(np.mean(ang_vals)) if ang_vals else 0.0
 
-            "edge_density": float(np.mean(edge_vals)),
-            "blur_mean": float(np.mean(blur_vals)),
-            "entropy_mean": float(np.mean(entropy_vals)),
-            "dark_channel_mean": float(np.mean(dark_vals)),
-        }
+        if self.use_brightness:
+            out["brightness_mean"] = float(np.mean(brightness)) if brightness else 0.0
+            out["brightness_std"] = float(np.std(brightness)) if brightness else 0.0
+
+        if self.use_color_dominance:
+            if colors:
+                cm = np.mean(colors, axis=0)
+                out["color_r"], out["color_g"], out["color_b"] = cm[2], cm[1], cm[0]
+            else:
+                out["color_r"] = out["color_g"] = out["color_b"] = 0.0
+
+        if self.use_scene_occupancy:
+            out["occupancy_mean"] = float(np.mean(occupancy)) if occupancy else 0.0
+
+        if self.use_blob_count:
+            out["blob_mean"] = float(np.mean(blob_counts)) if blob_counts else 0.0
+
+        if self.use_frame_diff_var:
+            out["diff_var_mean"] = float(np.mean(diff_vars)) if diff_vars else 0.0
+
+        return out
 
 
 # class FlowExtractor:
