@@ -590,8 +590,8 @@ class YOLOExtractor:
 class YOLOFlowExtractor:
     """
     Traffic-flow feature extractor with two modes:
-      - fast: detection + zones + cluster sizes (very fast)
-      - deep: segmentation masks + speed (slower)
+      - fast: detection + zones + cluster sizes
+      - deep: segmentation masks + speed estimation via track history
     """
 
     VEHICLE_CLASSES = {"car", "truck", "bus", "motorcycle"}
@@ -601,20 +601,20 @@ class YOLOFlowExtractor:
         sample_interval: int = 5,
         mask_interval: int = 5,
         imgsz: int = 640,
-        device: str = "cuda"
+        conf: float = 0.25,
+        device: str = "cuda",
     ):
         self.sample_interval = sample_interval
         self.mask_interval = mask_interval
         self.imgsz = imgsz
+        self.conf = conf
         self.device = device
         self.model = None
-        self.tracker = None
 
-        # 3 spatial zones
         self.zones = {
             "zone_1": (0.0, 0.33),
             "zone_2": (0.33, 0.66),
-            "zone_3": (0.66, 1.0)
+            "zone_3": (0.66, 1.0),
         }
 
     def _load_model(self):
@@ -623,21 +623,12 @@ class YOLOFlowExtractor:
             self.model = YOLO("yolo11n-seg.pt")
             self.model.to(self.device)
 
-        if self.tracker is None:
-            from ultralytics.utils.trackers.byte_tracker import BYTETracker
-            self.tracker = BYTETracker(track_thresh=0.4, match_thresh=0.7)
-
     def _get_zone(self, cx_norm):
         for zname, (low, high) in self.zones.items():
             if low <= cx_norm < high:
                 return zname
         return "zone_3"
 
-    # ----------------------------------------------------------
-    # mode = "fast" or "deep"
-    # fast: no segmentation, no speeds
-    # deep: segmentation + speed
-    # ----------------------------------------------------------
     def extract(self, video_path: str, mode: str = "fast") -> Dict:
         import numpy as np
 
@@ -646,101 +637,79 @@ class YOLOFlowExtractor:
         compute_masks = mode == "deep"
         compute_speed = mode == "deep"
 
-        speeds = []
-        stopped_counts = 0
+        zone_counts = {z: 0 for z in self.zones}
+        cluster_sizes = []
         coverage_pixels = []
 
-        zone_counts = {z: 0 for z in self.zones}
+        speed_dists = []
+        stopped_counts = 0
 
-        prev_positions = {} if compute_speed else None
+        # For tracking history
+        prev_positions = {}
 
-        cluster_sizes = []
-        frame_idx = 0
-
-        # Streaming prediction
-        results = self.model.predict(
+        # Use the track API instead of manual tracker object
+        results = self.model.track(
             source=video_path,
             stream=True,
+            conf=self.conf,
             imgsz=self.imgsz,
-            conf=0.25,
-            vid_stride=self.sample_interval,
             device=self.device,
-            verbose=False
+            verbose=False,
         )
+
+        frame_idx = 0
 
         for result in results:
             frame = result.orig_img
             H, W = frame.shape[:2]
 
-            # ---------------------------------------------------
-            # OPTIONAL: segmentation coverage (expensive)
-            # ---------------------------------------------------
-            if compute_masks:
-                if result.masks is not None and (frame_idx % self.mask_interval == 0):
-                    m = result.masks.data
-                    coverage_pixels.append(float(m.sum()) / (H * W))
+            # segmentation masks (optional)
+            if compute_masks and result.masks is not None and (frame_idx % self.mask_interval == 0):
+                m = result.masks.data
+                coverage_pixels.append(float(m.sum()) / (H * W))
 
-            # Collect detections
-            boxes_xyxy = []
-            scores = []
-            cls_ids = []
+            # detection + tracking IDs
+            ids = []
+            positions = {}
 
-            for box in result.boxes:
+            for box, track_id in zip(result.boxes, result.track_id):
+                # track_id might be None if not tracked
+                if track_id is None:
+                    continue
+                tid = int(track_id)
+
                 name = result.names[int(box.cls)]
                 if name not in self.VEHICLE_CLASSES:
                     continue
 
-                boxes_xyxy.append(box.xyxy.cpu().numpy()[0])
-                scores.append(float(box.conf))
-                cls_ids.append(int(box.cls))
-
-            # Prepare tracker input
-            import numpy as np
-            if len(boxes_xyxy) > 0:
-                dets = np.array(boxes_xyxy)
-                scores = np.array(scores)
-                cls_ids = np.array(cls_ids)
-            else:
-                dets = np.zeros((0, 4))
-                scores = np.zeros((0,))
-                cls_ids = np.zeros((0,))
-
-            # Tracking step
-            tracks = self.tracker.update(dets, scores, cls_ids)
-
-            active_ids = []
-
-            for tr in tracks:
-                tid = int(tr.track_id)
-                x1, y1, x2, y2 = tr.tlbr
+                xyxy = box.xyxy.cpu().numpy()[0]
+                x1, y1, x2, y2 = xyxy
                 cx = (x1 + x2) / 2
-                cy = (y1 + y2) / 2
                 cx_norm = cx / W
 
-                active_ids.append(tid)
+                ids.append(tid)
+                positions[tid] = (cx, (y1 + y2) / 2)
 
-                # zone density
-                z = self._get_zone(cx_norm)
-                zone_counts[z] += 1
+                # zone counts
+                zone_counts[self._get_zone(cx_norm)] += 1
 
-                # speed estimation
-                if compute_speed and tid in prev_positions:
-                    px, py = prev_positions[tid]
-                    dist = np.sqrt((cx - px) ** 2 + (cy - py) ** 2)
-                    speeds.append(dist)
-                    if dist < 0.5:
-                        stopped_counts += 1
+            # speed / stopped counts (optional)
+            if compute_speed:
+                for tid, pos in positions.items():
+                    if tid in prev_positions:
+                        px, py = prev_positions[tid]
+                        cx, cy = pos
+                        dist = np.sqrt((cx - px) ** 2 + (cy - py) ** 2)
+                        speed_dists.append(dist)
+                        if dist < 0.5:
+                            stopped_counts += 1
 
-                if compute_speed:
-                    prev_positions[tid] = (cx, cy)
+                prev_positions.update(positions)
 
-            # cluster size
-            cluster_sizes.append(len(active_ids))
+            cluster_sizes.append(len(ids))
             frame_idx += 1
 
-        # ---------------------------------------------------
-        # Final metrics
-        # ---------------------------------------------------
+        # final metrics
         result_dict = {
             "video_path": video_path,
             "cluster_size_mean": float(np.mean(cluster_sizes)) if cluster_sizes else 0.0,
@@ -750,8 +719,8 @@ class YOLOFlowExtractor:
 
         if compute_speed:
             result_dict.update({
-                "speed_mean": float(np.mean(speeds)) if speeds else 0.0,
-                "speed_std": float(np.std(speeds)) if speeds else 0.0,
+                "speed_mean": float(np.mean(speed_dists)) if speed_dists else 0.0,
+                "speed_std": float(np.std(speed_dists)) if speed_dists else 0.0,
                 "stopped_ratio": float(stopped_counts / max(1, sum(cluster_sizes))),
             })
 
@@ -761,6 +730,7 @@ class YOLOFlowExtractor:
             })
 
         return result_dict
+
 
 
 class EmbeddingExtractor:
