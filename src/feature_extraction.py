@@ -13,11 +13,6 @@ from typing import Dict, List
 
 import torch
 from concurrent.futures import ThreadPoolExecutor
-from PIL import Image
-
-import decord
-import core.vision_encoder.pe as pe
-import core.vision_encoder.transforms as transforms
 
 # =============================================================================
 # Base Extractors (CPU-only, lightweight)
@@ -611,21 +606,18 @@ class PerceptionEncoderExtractor:
 
     def _load_model(self):
         if self.model is None:
+            import core.vision_encoder.pe as pe
+            import core.vision_encoder.transforms as transforms
+            from PIL import Image
+            
             # Load PE model and preprocessing transform
             self.model = pe.CLIP.from_config(self.model_ckpt, pretrained=True)
             self.model = self.model.to(self.device).eval()
             self.preprocess = transforms.get_image_transform(self.model.image_size)
 
-    def _read_frames(self, video_path):
-        """
-        Uniformly sample frames using decord on CPU.
-        """
-        vr = decord.VideoReader(video_path, ctx=decord.cpu(0))  # CPU decode
-        total = len(vr)
-
-        frame_ids = [int(i * total / self.num_frames) for i in range(self.num_frames)]
-        frames = vr.get_batch(frame_ids).asnumpy()  # numpy arrays on CPU
-        return frames
+    def _read_frames(self, video_path: str) -> List[np.ndarray]:
+        """Read frames using PyAV (fast) with OpenCV fallback."""
+        return _read_frames_pyav(video_path, self.num_frames)
 
     def extract(self, video_path):
         """
