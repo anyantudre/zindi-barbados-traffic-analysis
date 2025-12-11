@@ -231,7 +231,7 @@ class TrainingPipeline:
         print(f"Model saved to {path}")
 
 
-class InferencePipeline:LL
+class InferencePipeline:
     """Pipeline for making predictions with a trained model."""
     
     def __init__(self, config: Config = None, model: TrafficCongestionModel = None):
