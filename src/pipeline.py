@@ -210,7 +210,6 @@ class TrainingPipeline:
             for extract_flag in self.config.EXTRACT_LIST:
                 if getattr(self.config, extract_flag):
                     setattr(self.config, extract_flag, False)
-            self.config.save_config()
 
         self.setup()
         self.load_data()
@@ -232,7 +231,7 @@ class TrainingPipeline:
         print(f"Model saved to {path}")
 
 
-class InferencePipeline:
+class InferencePipeline:LL
     """Pipeline for making predictions with a trained model."""
     
     def __init__(self, config: Config = None, model: TrafficCongestionModel = None):
