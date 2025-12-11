@@ -177,10 +177,11 @@ class YOLOExtractor:
             **{f"{k}_count": v for k, v in vehicle_types.items()}
         }
 
-
 class YOLOFlowExtractor:
     """
-    Faster traffic-flow feature extractor using YOLO streaming + lightweight tracking.
+    Traffic-flow feature extractor with two modes:
+      - fast: detection + zones + cluster sizes (very fast)
+      - deep: segmentation masks + speed (slower)
     """
 
     VEHICLE_CLASSES = {"car", "truck", "bus", "motorcycle"}
@@ -188,7 +189,7 @@ class YOLOFlowExtractor:
     def __init__(
         self,
         sample_interval: int = 5,
-        mask_interval: int = 5,         # compute segmentation coverage every N samples
+        mask_interval: int = 5,
         imgsz: int = 640,
         device: str = "cuda"
     ):
@@ -213,7 +214,6 @@ class YOLOFlowExtractor:
             self.model.to(self.device)
 
         if self.tracker is None:
-            # Lightweight BYTETracker config
             from ultralytics.utils.trackers.byte_tracker import BYTETracker
             self.tracker = BYTETracker(track_thresh=0.4, match_thresh=0.7)
 
@@ -223,22 +223,31 @@ class YOLOFlowExtractor:
                 return zname
         return "zone_3"
 
-    def extract(self, video_path: str) -> Dict:
+    # ----------------------------------------------------------
+    # mode = "fast" or "deep"
+    # fast: no segmentation, no speeds
+    # deep: segmentation + speed
+    # ----------------------------------------------------------
+    def extract(self, video_path: str, mode: str = "fast") -> Dict:
         import numpy as np
 
         self._load_model()
+
+        compute_masks = mode == "deep"
+        compute_speed = mode == "deep"
 
         speeds = []
         stopped_counts = 0
         coverage_pixels = []
 
         zone_counts = {z: 0 for z in self.zones}
-        prev_positions = {}
+
+        prev_positions = {} if compute_speed else None
 
         cluster_sizes = []
         frame_idx = 0
 
-        # YOLO STREAMING
+        # Streaming prediction
         results = self.model.predict(
             source=video_path,
             stream=True,
@@ -253,12 +262,15 @@ class YOLOFlowExtractor:
             frame = result.orig_img
             H, W = frame.shape[:2]
 
-            # segmentation mask coverage (skipped most frames)
-            if result.masks is not None and (frame_idx % self.mask_interval == 0):
-                m = result.masks.data
-                coverage_pixels.append(float(m.sum()) / (H * W))
+            # ---------------------------------------------------
+            # OPTIONAL: segmentation coverage (expensive)
+            # ---------------------------------------------------
+            if compute_masks:
+                if result.masks is not None and (frame_idx % self.mask_interval == 0):
+                    m = result.masks.data
+                    coverage_pixels.append(float(m.sum()) / (H * W))
 
-            # collect detection tensors
+            # Collect detections
             boxes_xyxy = []
             scores = []
             cls_ids = []
@@ -272,7 +284,7 @@ class YOLOFlowExtractor:
                 scores.append(float(box.conf))
                 cls_ids.append(int(box.cls))
 
-            # TRACK
+            # Prepare tracker input
             import numpy as np
             if len(boxes_xyxy) > 0:
                 dets = np.array(boxes_xyxy)
@@ -283,6 +295,7 @@ class YOLOFlowExtractor:
                 scores = np.zeros((0,))
                 cls_ids = np.zeros((0,))
 
+            # Tracking step
             tracks = self.tracker.update(dets, scores, cls_ids)
 
             active_ids = []
@@ -296,34 +309,49 @@ class YOLOFlowExtractor:
 
                 active_ids.append(tid)
 
-                # zone counts
+                # zone density
                 z = self._get_zone(cx_norm)
                 zone_counts[z] += 1
 
-                # speeds
-                if tid in prev_positions:
+                # speed estimation
+                if compute_speed and tid in prev_positions:
                     px, py = prev_positions[tid]
                     dist = np.sqrt((cx - px) ** 2 + (cy - py) ** 2)
                     speeds.append(dist)
                     if dist < 0.5:
                         stopped_counts += 1
 
-                prev_positions[tid] = (cx, cy)
+                if compute_speed:
+                    prev_positions[tid] = (cx, cy)
 
+            # cluster size
             cluster_sizes.append(len(active_ids))
             frame_idx += 1
 
-        # final metrics
-        return {
+        # ---------------------------------------------------
+        # Final metrics
+        # ---------------------------------------------------
+        result_dict = {
             "video_path": video_path,
             "cluster_size_mean": float(np.mean(cluster_sizes)) if cluster_sizes else 0.0,
             "cluster_size_max": float(np.max(cluster_sizes)) if cluster_sizes else 0.0,
-            "speed_mean": float(np.mean(speeds)) if speeds else 0.0,
-            "speed_std": float(np.std(speeds)) if speeds else 0.0,
-            "stopped_ratio": float(stopped_counts / max(1, sum(cluster_sizes))),
             **{f"{z}_count": int(c) for z, c in zone_counts.items()},
-            "mask_coverage_mean": float(np.mean(coverage_pixels)) if coverage_pixels else 0.0,
         }
+
+        if compute_speed:
+            result_dict.update({
+                "speed_mean": float(np.mean(speeds)) if speeds else 0.0,
+                "speed_std": float(np.std(speeds)) if speeds else 0.0,
+                "stopped_ratio": float(stopped_counts / max(1, sum(cluster_sizes))),
+            })
+
+        if compute_masks:
+            result_dict.update({
+                "mask_coverage_mean": float(np.mean(coverage_pixels)) if coverage_pixels else 0.0,
+            })
+
+        return result_dict
+
 
 
 class EmbeddingExtractor:
