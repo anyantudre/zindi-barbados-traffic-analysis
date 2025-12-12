@@ -126,24 +126,29 @@ def optimize_model(
 ) -> dict:
     """
     Optimize hyperparameters for a model using Optuna.
-    
+
     Args:
         training_df: Training DataFrame with features and 'congestion_rating'.
-        config: Config object with FEATURES_COLS.
+        config: Config object with configuration settings.
         model_name: Model to optimize ("xgb", "lgbm", "catboost", "random_forest").
         n_trials: Number of Optuna trials.
         n_folds: Number of CV folds.
         random_state: Random seed.
-        
+
     Returns:
         Dict with best_params, best_score, study.
     """
+    # Dynamically determine feature columns (exclude non-feature columns)
+    feature_cols = [col for col in training_df.columns
+                   if col not in config.ID_COLS + ['ID', 'cycle_phase', 'ID_type', 'video_path', 'congestion_rating']]
+
     print(f"\n{'='*60}")
     print(f"HYPERPARAMETER OPTIMIZATION: {model_name.upper()}")
     print(f"Metric: Macro-F1 | Folds: {n_folds} | Trials: {n_trials}")
+    print(f"Using {len(feature_cols)} features: {feature_cols}")
     print(f"{'='*60}")
-    
-    X = training_df[config.FEATURES_COLS].values
+
+    X = training_df[feature_cols].values
     le = LabelEncoder()
     y = le.fit_transform(training_df['congestion_rating'])
     

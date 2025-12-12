@@ -70,19 +70,27 @@ class TrainingPipeline:
     def preprocess(self) -> 'TrainingPipeline':
         """
         Preprocess the data.
-        
+
         Returns:
             self
         """
         print("Preprocessing data...")
         self.training_df, self.validation_df, self.testing_df = \
             self.preprocessor.prepare_full_dataset(
-                self.train_df, 
-                self.test_df, 
-                self.videos_df, 
+                self.train_df,
+                self.test_df,
+                self.videos_df,
                 self.features_df
             )
+
+        # Store the dynamic feature columns for use in training/evaluation
+        # Dynamically determine feature columns from the training data
+        feature_cols = [col for col in self.training_df.columns
+                       if col not in self.config.ID_COLS + ['ID', 'cycle_phase', 'ID_type', 'video_path', 'congestion_rating']]
+        self.dynamic_feature_cols = [col for col in feature_cols if col in self.training_df.columns]
+
         print(f"Training: {len(self.training_df)}, Validation: {len(self.validation_df)}, Testing: {len(self.testing_df)}")
+        print(f"Using {len(self.dynamic_feature_cols)} feature columns: {self.dynamic_feature_cols}")
         return self
     
     def train(self, model_name: str = "random_forest", use_cv: bool = False, 
@@ -123,14 +131,14 @@ class TrainingPipeline:
             )
         else:
             # ML models
-            X_train = self.training_df[self.config.FEATURES_COLS]
+            X_train = self.training_df[self.dynamic_feature_cols]
             self.model = TrafficCongestionModel(self.config, model_name=model_name)
-            
+
             if use_cv:
-                self.model.fit_cv(X_train, y_train, self.config.FEATURES_COLS, n_splits)
+                self.model.fit_cv(X_train, y_train, self.dynamic_feature_cols, n_splits)
             else:
                 print(f"Training {model_name}...")
-                self.model.fit(X_train, y_train, self.config.FEATURES_COLS)
+                self.model.fit(X_train, y_train, self.dynamic_feature_cols)
         
         print("Model training complete!")
         return self
@@ -157,7 +165,7 @@ class TrainingPipeline:
             )
         else:
             # ML models
-            X_val = self.validation_df[self.config.FEATURES_COLS]
+            X_val = self.validation_df[self.dynamic_feature_cols]
             y_val_encoded, y_pred_encoded, metrics = self.model.evaluate(X_val, y_val)
         
         # Display competition metrics
@@ -185,7 +193,7 @@ class TrainingPipeline:
                 if feat_imp is not None:
                     self.visualizer.plot_feature_importance(
                         feat_imp,
-                        self.config.FEATURES_COLS
+                        self.dynamic_feature_cols
                     )
         
         return metrics
@@ -279,17 +287,17 @@ class InferencePipeline:
         return self
     
     def prepare_test_data(
-        self, 
+        self,
         testing_df: pd.DataFrame = None,
         validation_df: pd.DataFrame = None
     ) -> 'InferencePipeline':
         """
         Prepare test data for inference.
-        
+
         Args:
             testing_df: Pre-processed testing dataframe (for submission IDs).
             validation_df: Validation dataframe with video paths (for video models).
-            
+
         Returns:
             self
         """
@@ -297,7 +305,7 @@ class InferencePipeline:
             self.testing_df = testing_df
         if validation_df is not None:
             self.validation_df = validation_df
-        
+
         if self.testing_df is None:
             # Load and preprocess from scratch
             print("Loading and preprocessing test data...")
@@ -305,6 +313,14 @@ class InferencePipeline:
             _, self.validation_df, self.testing_df = self.preprocessor.prepare_full_dataset(
                 train_df, test_df, videos_df, features_df
             )
+
+        # Determine dynamic feature columns from the test data
+        if hasattr(self, 'testing_df') and self.testing_df is not None:
+            feature_cols = [col for col in self.testing_df.columns
+                           if col not in self.config.ID_COLS + ['ID', 'cycle_phase', 'ID_type', 'video_path', 'congestion_rating']]
+            self.dynamic_feature_cols = [col for col in feature_cols if col in self.testing_df.columns]
+            print(f"Using {len(self.dynamic_feature_cols)} feature columns: {self.dynamic_feature_cols}")
+
         return self
     
     def _extract_group(self, id_col: str) -> tuple:
@@ -373,7 +389,7 @@ class InferencePipeline:
             return self._predict_video_model(video_col)
         
         # ML models - direct prediction
-        X_test = self.testing_df[self.config.FEATURES_COLS]
+        X_test = self.testing_df[self.dynamic_feature_cols]
         predictions = self.model.predict(X_test)
         
         # Create submission dataframe

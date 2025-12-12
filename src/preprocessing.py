@@ -222,49 +222,56 @@ class DataPreprocessor:
         return shifted_df
     
     def prepare_full_dataset(
-        self, 
-        train: pd.DataFrame, 
-        test: pd.DataFrame, 
-        videos_df: pd.DataFrame, 
+        self,
+        train: pd.DataFrame,
+        test: pd.DataFrame,
+        videos_df: pd.DataFrame,
         features: pd.DataFrame
     ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         """
         Prepare the full dataset for modeling.
-        
+
         Args:
             train: Training dataframe.
             test: Test dataframe.
             videos_df: DataFrame with video paths.
             features: DataFrame with extracted features.
-            
+
         Returns:
             Tuple of (training_df, validation_df, testing_df).
         """
+        # Dynamically determine feature columns from the loaded features DataFrame
+        # Exclude 'video_path' column as it's not a feature
+        feature_cols = [col for col in features.columns if col != 'video_path']
+
+        # Combine with temporal features (always included)
+        all_feature_cols = self.config.TEMPORAL_FEATURES + feature_cols
+
         # Preprocess train and test
         train_df, test_df = self.preprocess_train_test(train, test, videos_df, features)
-        
+
         # Combine into final dataframe
         final_df = pd.concat([train_df, test_df])
-        
+
         # Create long format
         long_df = self.create_long_format(final_df)
-        
+
         # Prepare sample submission
         ss = self.prepare_sample_submission(self.config.SAMPLE_SUBMISSION_PATH)
-        
+
         # Merge all data
         merged_df = pd.concat([long_df, ss])
         merged_df = merged_df.sort_values(by=['view_label', 'ID_type', 'time_segment_id'])
         # Keep video_path for video models
         keep_cols = self.config.ID_COLS + ['ID', 'cycle_phase', 'ID_type', 'video_path'] + \
-                    ['congestion_rating'] + self.config.FEATURES_COLS
+                    ['congestion_rating'] + all_feature_cols
         merged_df = merged_df[[c for c in keep_cols if c in merged_df.columns]]
         merged_df = merged_df.reset_index(drop=True)
-        
+
         #Create shifted features
         shifted_df = self.create_shifted_features(
-            merged_df, 
-            self.config.FEATURES_COLS, 
+            merged_df,
+            all_feature_cols,
             self.config.LAG_SHIFT
         )
         
