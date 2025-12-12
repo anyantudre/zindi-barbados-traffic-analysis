@@ -67,9 +67,12 @@ _BASE_ESTIMATORS = [("rf", MODELS["random_forest"])]
 # Optional: Add GPU models if available
 try:
     import xgboost as xgb
+    from config import Config
+    config = Config()
+
     MODELS["xgb"] = xgb.XGBClassifier(
         n_jobs=-1,
-        device='cuda',
+        device='cuda' if config.DEVICE == 'cuda' else 'cpu',
         objective='multi:softmax',
         eval_metric=competition_metric_sklearn,
         random_state=42,
@@ -88,10 +91,13 @@ except ImportError:
 
 try:
     import lightgbm as lgbm
+    from config import Config
+    config = Config()
+
     MODELS["lgbm"] = lgbm.LGBMClassifier(
         n_jobs=-1,
         verbose=-1,
-        device='gpu',
+        device='gpu' if config.DEVICE == 'cuda' else 'cpu',
         random_state=42,
         class_weight='balanced',
         **{
@@ -111,10 +117,12 @@ except ImportError:
 
 try:
     import catboost
+    from config import Config
+    config = Config()
+
     MODELS["catboost"] = catboost.CatBoostClassifier(
         verbose=False,
-        task_type="GPU",
-        devices='0',
+        task_type="GPU" if config.DEVICE == 'cuda' else 'CPU',
         random_state=42,
         auto_class_weights='Balanced',
         **{
