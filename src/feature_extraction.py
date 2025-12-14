@@ -19,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 # =============================================================================
 # Unified extraction interface
 # =============================================================================
-
+    
 def extract_features(extractor, video_paths: List[str], cache_path: str, 
                      extract: bool = False) -> pd.DataFrame:
     """

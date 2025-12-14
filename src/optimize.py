@@ -14,7 +14,7 @@ from sklearn.base import clone
 from sklearn.utils.class_weight import compute_sample_weight
 
 
-from model_dispatcher import competition_metric_xgb
+from src.model_dispatcher import competition_metric_xgb
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 
@@ -23,65 +23,114 @@ def get_param_space(trial, model_name: str) -> dict:
     
     if model_name == "xgb":
         import xgboost as xgb
+
+        params = {
+            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
+            "max_depth": trial.suggest_int("max_depth", 3, 15),
+            "min_child_weight": trial.suggest_int("min_child_weight", 1, 15),
+            "subsample": trial.suggest_float("subsample", 0.6, 1.0),
+            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.6, 1.0),
+            "reg_alpha": trial.suggest_float("reg_alpha", 1e-4, 5.0, log=True),
+            "reg_lambda": trial.suggest_float("reg_lambda", 1e-4, 5.0, log=True),
+            
+        }
         return {
             'model': xgb.XGBClassifier(
-                learning_rate=trial.suggest_float('learning_rate', 0.01, 0.3, log=True),
-                max_depth=trial.suggest_int('max_depth', 3, 15),
-                min_child_weight=trial.suggest_int('min_child_weight', 1, 20),
-                subsample=trial.suggest_float('subsample', 0.6, 1.0),
-                colsample_bytree=trial.suggest_float('colsample_bytree', 0.6, 1.0),
-                reg_alpha=trial.suggest_float('reg_alpha', 1e-4, 10.0, log=True),
-                reg_lambda=trial.suggest_float('reg_lambda', 1e-4, 10.0, log=True),
-                n_estimators=trial.suggest_int('n_estimators', 100, 500),
+                **params,
                 n_jobs=-1, device='cuda', random_state=42, eval_metric=competition_metric_xgb,
-                objective='multi:softmax'
-            ),
-            
+                objective='multi:softmax',
+                n_estimators=500,
+                num_class=4,
+            )
         }
     
     elif model_name == "lgbm":
         import lightgbm as lgbm
+        params = {
+                    "num_leaves": trial.suggest_int("num_leaves", 20, 2000, step=20),
+                    "max_depth": trial.suggest_int("max_depth", 3, 15),
+                    "learning_rate": trial.suggest_float("learning_rate", 0.005, 0.2, log=True),
+
+                    # regularization
+                    "min_data_in_leaf": trial.suggest_int("min_data_in_leaf", 100, 8000, step=100),
+                    "reg_alpha": trial.suggest_float("reg_alpha", 1e-4, 5.0, log=True),
+                    "reg_lambda": trial.suggest_float("reg_lambda", 1e-4, 5.0, log=True),
+
+                    # sampling
+                    "feature_fraction": trial.suggest_float("feature_fraction", 0.5, 1.0),
+                    "bagging_fraction": trial.suggest_float("bagging_fraction", 0.5, 1.0),
+                    "bagging_freq": 1,
+
+                    # structure
+                    "max_bin": trial.suggest_int("max_bin", 200, 300),
+
+                    # quality
+                    "min_gain_to_split": trial.suggest_float("min_gain_to_split", 0, 10),
+                }
         return {
             'model': lgbm.LGBMClassifier(
-                num_leaves=trial.suggest_int('num_leaves', 20, 200),
-                max_depth=trial.suggest_int('max_depth', 3, 15),
-                learning_rate=trial.suggest_float('learning_rate', 0.01, 0.3, log=True),
-                n_estimators=trial.suggest_int('n_estimators', 100, 500),
-                min_child_samples=trial.suggest_int('min_child_samples', 10, 100),
-                subsample=trial.suggest_float('subsample', 0.6, 1.0),
-                colsample_bytree=trial.suggest_float('colsample_bytree', 0.6, 1.0),
-                reg_alpha=trial.suggest_float('reg_alpha', 1e-4, 10.0, log=True),
-                reg_lambda=trial.suggest_float('reg_lambda', 1e-4, 10.0, log=True),
-                n_jobs=-1, verbose=-1, device='gpu', random_state=42,
-                class_weight='balanced'
-            )
+                                            **params,
+                                            n_estimators=500,
+                                            n_jobs=-1,
+                                            verbose=-1,
+                                            device='gpu',
+                                            random_state=42,
+                                            class_weight='balanced'
+                                        )
         }
     
     elif model_name == "catboost":
         import catboost
+
+        params = {
+                "depth": trial.suggest_int("depth", 4, 15),
+                "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
+
+                # regularization
+                "l2_leaf_reg": trial.suggest_float("l2_leaf_reg", 1e-3, 10.0, log=True),
+
+                # tree & sampling behavior
+                "bagging_temperature": trial.suggest_float("bagging_temperature", 0.0, 1.5),
+                "random_strength": trial.suggest_float("random_strength", 0.5, 20.0),
+
+                # iterations
+                "iterations": trial.suggest_int("iterations", 100, 500),
+            }
         return {
             'model': catboost.CatBoostClassifier(
-                depth=trial.suggest_int('depth', 4, 10),
-                learning_rate=trial.suggest_float('learning_rate', 0.01, 0.3, log=True),
-                iterations=trial.suggest_int('iterations', 100, 500),
-                l2_leaf_reg=trial.suggest_float('l2_leaf_reg', 1e-4, 10.0, log=True),
-                bagging_temperature=trial.suggest_float('bagging_temperature', 0.0, 1.0),
-                random_strength=trial.suggest_float('random_strength', 0.0, 10.0),
-                verbose=False, task_type='GPU', devices='0', random_state=42,
-                auto_class_weights='Balanced'
+                **params,
+                loss_function="MultiClass",
+                eval_metric="TotalF1",      # CatBoost’s multiclass F1
+                task_type="GPU",
+                devices="0",
+                auto_class_weights="Balanced",
+                verbose=False,
+                random_state=42
             )
         }
     
     elif model_name == "random_forest":
         from sklearn.ensemble import RandomForestClassifier
+
+        params = {
+            "n_estimators": trial.suggest_int("n_estimators", 200, 1000),
+
+            # tree structure
+            "max_depth": trial.suggest_int("max_depth", 5, 30),
+            "min_samples_split": trial.suggest_int("min_samples_split", 2, 50),
+            "min_samples_leaf": trial.suggest_int("min_samples_leaf", 1, 20),
+
+            # feature sampling
+            "max_features": trial.suggest_categorical("max_features", ["sqrt", "log2", None]),
+        }
+
         return {
             'model': RandomForestClassifier(
-                n_estimators=trial.suggest_int('n_estimators', 100, 500),
-                max_depth=trial.suggest_int('max_depth', 5, 30),
-                min_samples_split=trial.suggest_int('min_samples_split', 2, 20),
-                min_samples_leaf=trial.suggest_int('min_samples_leaf', 1, 10),
-                max_features=trial.suggest_categorical('max_features', ['sqrt', 'log2', None]),
-                n_jobs=-1, random_state=42, class_weight='balanced'
+                **params,
+                random_state=42,
+                class_weight="balanced",
+                n_jobs=-1,
+                bootstrap=True
             )
         }
     
@@ -93,8 +142,6 @@ def objective(trial, X, y, model_name, n_folds, random_state):
     params = get_param_space(trial, model_name)
     model = params['model']
     
-    if model_name == 'xgb':
-        sample_weight = compute_sample_weight('balanced', y)
     
     skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=random_state)
     f1_scores = []
@@ -105,6 +152,7 @@ def objective(trial, X, y, model_name, n_folds, random_state):
         
         model_clone = clone(model)
         if model_name == 'xgb':
+            sample_weight = compute_sample_weight('balanced', y_train)
             model_clone.fit(X_train, y_train, sample_weight=sample_weight)
         else:
             model_clone.fit(X_train, y_train)

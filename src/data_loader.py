@@ -120,19 +120,27 @@ class DataLoader:
         """
         Load all required data: video paths, train, test, and features.
         
+        If videos are not available locally, videos_df will be empty and features
+        will be loaded from CSV files (which already contain video_path).
+        
         Returns:
             Tuple of (videos_df, train_df, test_df, features_df)
         """
         from .feature_extraction import get_all_features
         
-        # Build video paths dataframe
-        paths_dict = self.config.get_paths_dict()
-        videos_df = self.build_dataframe(paths_dict)
+        # Build video paths dataframe (may be empty if videos not available)
+        try:
+            paths_dict = self.config.get_paths_dict()
+            videos_df = self.build_dataframe(paths_dict)
+        except (AttributeError, KeyError, FileNotFoundError):
+            # If paths_dict is not available or paths don't exist, create empty videos_df
+            videos_df = pd.DataFrame(columns=['videos', 'video_path'])
         
         # Load CSVs
         train, test, _ = self.load_train_test_data()
         
         # Load/extract all enabled features
+        # If videos_df is empty, get_all_features will load from CSV files
         video_paths = videos_df['video_path'].tolist() if len(videos_df) > 0 else []
         features = get_all_features(self.config, video_paths)
         

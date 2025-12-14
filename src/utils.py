@@ -121,3 +121,100 @@ final_df, lowvar_cols, perfect_corr_cols = preprocess_yolo_features(
     var_threshold=0.01,
     output_path="yolo_features_merged_rerun.csv"
 )
+
+
+import pandas as pd
+import numpy as np
+from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+def pca_pipeline(
+    input_csv,
+    output_csv,
+    drop_cols=None,
+    variance_threshold=0.95,
+    plot=False
+):
+    """
+    Full PCA pipeline:
+      - Load CSV
+      - Drop ID/non-numeric columns
+      - Standardize
+      - Run PCA
+      - Keep enough components to reach variance_threshold
+      - Save PCA output CSV
+      - Return reduced DF + PCA model + scaler
+    """
+
+    # -------------------------------------------------
+    # 1. Load dataset
+    # -------------------------------------------------
+    df = pd.read_csv(input_csv)
+
+    if drop_cols is None:
+        drop_cols = []
+
+    X = df.drop(columns=drop_cols).select_dtypes(include=[np.number])
+
+    # -------------------------------------------------
+    # 2. Scale
+    # -------------------------------------------------
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+
+    # -------------------------------------------------
+    # 3. PCA
+    # -------------------------------------------------
+    pca = PCA()
+    X_pca = pca.fit_transform(X_scaled)
+
+    explained = pca.explained_variance_ratio_
+    cumulative = explained.cumsum()
+
+    print("\nExplained variance per component:")
+    print(explained)
+
+    print("\nCumulative explained variance:")
+    print(cumulative)
+
+    # -------------------------------------------------
+    # 4. Components to keep
+    # -------------------------------------------------
+    n = np.argmax(cumulative >= variance_threshold) + 1
+    print(f"\n Number of cols on original dataset {len(X.columns)} columns")
+    print(f"\nKeeping {n} components (≥ {variance_threshold*100:.1f}% variance).")
+
+    cols = [f"PCA_{i}" for i in range(1, n+1)]
+    df_pca = pd.DataFrame(X_pca[:, :n], columns=cols)
+    df_pca.insert(0, "video_path", df["video_path"])
+
+    # -------------------------------------------------
+    # 5. Plots
+    # -------------------------------------------------
+    if plot:
+        plt.figure(figsize=(10,4))
+        sns.barplot(x=np.arange(1, len(explained)+1), y=explained)
+        plt.xlabel("PCA components")
+        plt.ylabel("Explained variance ratio")
+        plt.title("PCA Explained Variance per Component")
+        plt.tight_layout()
+        plt.show()
+
+        plt.figure(figsize=(10,4))
+        plt.plot(cumulative, marker="o")
+        plt.axhline(variance_threshold, color="red", linestyle="--")
+        plt.xlabel("Number of components")
+        plt.ylabel("Cumulative explained variance")
+        plt.title("Cumulative PCA Variance")
+        plt.tight_layout()
+        plt.show()
+
+    # -------------------------------------------------
+    # 6. Export
+    # -------------------------------------------------
+    df_pca.to_csv(output_csv, index=False)
+    print(f"\nSaved PCA result to: {output_csv}")
+
+    return df_pca, pca, scaler

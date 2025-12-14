@@ -4,6 +4,7 @@ This module contains functions for preprocessing and transforming data.
 Includes time feature extraction, data merging, and encoding.
 """
 
+import os
 import pandas as pd
 import numpy as np
 from typing import Tuple, List, Optional
@@ -81,7 +82,8 @@ class DataPreprocessor:
         self, 
         train: pd.DataFrame, 
         test: pd.DataFrame, 
-        videos_df: pd.DataFrame
+        videos_df: Optional[pd.DataFrame] = None,
+        features: Optional[pd.DataFrame] = None
     ) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
         Merge train and test with video paths.
@@ -89,7 +91,8 @@ class DataPreprocessor:
         Args:
             train: Training dataframe.
             test: Test dataframe.
-            videos_df: DataFrame with video paths.
+            videos_df: DataFrame with video paths (optional, will be created from features if None/empty).
+            features: DataFrame with extracted features (used to build videos_df if videos_df is None/empty).
             
         Returns:
             Tuple of (train, test) merged with video paths.
@@ -101,6 +104,29 @@ class DataPreprocessor:
         train['videos'] = self.extract_video_id(train['videos'])
         test['videos'] = self.extract_video_id(test['videos'])
         
+        # Build videos_df from features if not provided or empty
+        if videos_df is None or len(videos_df) == 0:
+            if features is not None and 'video_path' in features.columns:
+                # Extract video ID from video_path in features
+                videos_df = features[['video_path']].copy()
+                videos_df['videos'] = videos_df['video_path'].apply(
+                    lambda x: os.path.basename(x).replace('.mp4', '') if pd.notna(x) else None
+                )
+                videos_df = videos_df.dropna(subset=['videos']).drop_duplicates(subset=['videos'])
+            else:
+                # Fallback: create videos_df from train/test videos column
+                # Extract video IDs and create minimal video_path (using original path from train/test)
+                all_videos = pd.concat([train[['videos']], test[['videos']]]).drop_duplicates()
+                # Reconstruct video_path from videos column (before extract_video_id was called)
+                # Since we already called extract_video_id above, we need to work with what we have
+                # Create a minimal videos_df - video_path will be None/NaN for local runs without actual videos
+                videos_df = all_videos.copy()
+                videos_df['video_path'] = None  # Will be filled from features merge later if available
+        
+        # Ensure videos_df has the required column
+        if 'videos' not in videos_df.columns:
+            raise ValueError("videos_df must have a 'videos' column")
+        
         # Merge with video paths
         train = train.merge(videos_df, on='videos', how='left')
         test = test.merge(videos_df, on='videos', how='left')
@@ -111,8 +137,8 @@ class DataPreprocessor:
         self, 
         train: pd.DataFrame, 
         test: pd.DataFrame, 
-        videos_df: pd.DataFrame, 
-        features: pd.DataFrame
+        videos_df: Optional[pd.DataFrame] = None, 
+        features: Optional[pd.DataFrame] = None
     ) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
         Full preprocessing pipeline for train and test data.
@@ -120,14 +146,14 @@ class DataPreprocessor:
         Args:
             train: Training dataframe.
             test: Test dataframe.
-            videos_df: DataFrame with video paths.
+            videos_df: DataFrame with video paths (optional, will be created from features if None/empty).
             features: DataFrame with extracted features.
             
         Returns:
             Tuple of (train_df, test_df) fully preprocessed.
         """
-        # Merge with video paths
-        train, test = self.merge_with_video_paths(train, test, videos_df)
+        # Merge with video paths (videos_df can be None/empty if features already have video_path)
+        train, test = self.merge_with_video_paths(train, test, videos_df, features)
         
         # Add time features
         train = self.add_time_features(train)
@@ -225,8 +251,8 @@ class DataPreprocessor:
         self,
         train: pd.DataFrame,
         test: pd.DataFrame,
-        videos_df: pd.DataFrame,
-        features: pd.DataFrame
+        videos_df: Optional[pd.DataFrame] = None,
+        features: Optional[pd.DataFrame] = None
     ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         """
         Prepare the full dataset for modeling.
@@ -234,12 +260,15 @@ class DataPreprocessor:
         Args:
             train: Training dataframe.
             test: Test dataframe.
-            videos_df: DataFrame with video paths.
-            features: DataFrame with extracted features.
+            videos_df: DataFrame with video paths (optional, will be created from features if None/empty).
+            features: DataFrame with extracted features (required).
 
         Returns:
             Tuple of (training_df, validation_df, testing_df).
         """
+        if features is None or len(features) == 0:
+            raise ValueError("features DataFrame is required and cannot be empty")
+        
         # Dynamically determine feature columns from the loaded features DataFrame
         # Exclude 'video_path' column as it's not a feature
         feature_cols = [col for col in features.columns if col != 'video_path']

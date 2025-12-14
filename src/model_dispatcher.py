@@ -1,7 +1,7 @@
 # Model dispatcher for easy model swapping
 """
 Define models and their hyperparameters here.
-Usage: from src.model_dispatcher import MODELS
+Usage: from src.model_dispatcher import MODELS, get_model
 """
 
 import numpy as np
@@ -50,109 +50,126 @@ def competition_metric_sklearn(y_true, y_pred) -> float:
     return competition_score(y_true, y_pred)
 
 
+def get_model(model_name: str, device: str = "cpu"):
+    """
+    Get a model instance with proper device configuration.
+    
+    Args:
+        model_name: Name of the model.
+        device: Device to use ('cuda' or 'cpu').
+        
+    Returns:
+        Model instance.
+    """
+    if model_name == "random_forest":
+        return RandomForestClassifier(
+            random_state=42,
+            class_weight="balanced",
+            n_jobs=-1,
+            bootstrap=True,
+            **{'n_estimators': 500, 'max_depth': 13, 'min_samples_split': 16, 'min_samples_leaf': 8, 'max_features': None}
+        )
+    
+    elif model_name == "xgb":
+        try:
+            import xgboost as xgb
+            model = xgb.XGBClassifier(
+                n_jobs=-1,
+                device='cuda' if device == 'cuda' else 'cpu',
+                objective='multi:softmax',
+                eval_metric=competition_metric_sklearn,
+                random_state=42,
+                **{'learning_rate': 0.01061515021837236, 'max_depth': 7, 'min_child_weight': 3, 'subsample': 0.7303160466926395, 'colsample_bytree': 0.7424793969110655, 'reg_alpha': 0.04224199746665908, 'reg_lambda': 0.003608443241043876}
+            )
+            # Set the estimator type for scikit-learn compatibility
+            model._estimator_type = "classifier"
+            return model
+        except ImportError:
+            raise ImportError("xgboost not installed")
+    
+    elif model_name == "lgbm":
+        try:
+            import lightgbm as lgbm
+            return lgbm.LGBMClassifier(
+                n_jobs=-1,
+                verbose=-1,
+                device='gpu' if device == 'cuda' else 'cpu',
+                random_state=42,
+                class_weight='balanced',
+                **{
+                    'num_leaves': 159, 'max_depth': 10, 
+                    'learning_rate': 0.07201934773717454, 
+                    'n_estimators': 1000, 
+                    'min_child_samples': 11, 
+                    'subsample': 0.6724360662104916, 
+                    'colsample_bytree': 0.9689043505892945, 
+                    'reg_alpha': 2.7261162591155736, 
+                    'reg_lambda': 5.16531384161136
+                }
+            )
+        except ImportError:
+            raise ImportError("lightgbm not installed")
+    
+    elif model_name == "catboost":
+        try:
+            import catboost
+
+            params = {
+                'depth': 9, 
+                'learning_rate': 0.022515921040338078, 
+                'iterations': 262, 
+                'l2_leaf_reg': 0.0002240008599075843, 
+                'bagging_temperature': 0.9243734060325552, 
+                'random_strength': 5.811210933306866
+            }
+            return catboost.CatBoostClassifier(
+                        **params,
+                        loss_function="MultiClass",
+                        eval_metric="TotalF1",      # CatBoost’s multiclass F1
+                        task_type="GPU",
+                        devices="0",
+                        auto_class_weights="Balanced",
+                        verbose=False,
+                        random_state=42
+                    )
+        except ImportError:
+            raise ImportError("catboost not installed")
+    
+    elif model_name == "ensemble_soft":
+        # Build base estimators with device
+        base_estimators = [
+            ("rf", get_model("random_forest", device))
+        ]
+        try:
+            base_estimators.append(("xgb", get_model("xgb", device)))
+        except ImportError:
+            pass
+        try:
+            base_estimators.append(("lgbm", get_model("lgbm", device)))
+        except ImportError:
+            pass
+        try:
+            base_estimators.append(("catboost", get_model("catboost", device)))
+        except ImportError:
+            pass
+        
+        return VotingClassifier(
+            estimators=base_estimators,
+            voting='soft',
+            n_jobs=-1
+        )
+    
+    else:
+        raise ValueError(f"Unknown model: {model_name}")
+
+
+# Legacy MODELS dict for backward compatibility (uses CPU by default)
 MODELS = {
     "random_forest": RandomForestClassifier(
         random_state=42,
         class_weight='balanced',
         n_jobs=-1,
-
-        **{'n_estimators': 187, 'max_depth': 13, 'min_samples_split': 16, 'min_samples_leaf': 8, 'max_features': None}
-
+        **{'n_estimators': 1000, 'max_depth': 13, 'min_samples_split': 16, 'min_samples_leaf': 8, 'max_features': None}
     ),
 }
-
-# Store base estimators for ensemble
-_BASE_ESTIMATORS = [("rf", MODELS["random_forest"])]
-
-# Optional: Add GPU models if available
-try:
-    import xgboost as xgb
-    from config import Config
-    config = Config()
-
-    MODELS["xgb"] = xgb.XGBClassifier(
-        n_jobs=-1,
-        device='cuda' if config.DEVICE == 'cuda' else 'cpu',
-        objective='multi:softmax',
-        eval_metric=competition_metric_sklearn,
-        random_state=42,
-        **{
-            'learning_rate': 0.01, 
-            'max_depth': 10, 'min_child_weight': 1, 
-            'subsample': 0.8, 
-            'colsample_bytree': 0.8, 
-            'reg_alpha': 0.01, 'reg_lambda': 0.01, 
-            'n_estimators': 500
-        }
-    )
-    _BASE_ESTIMATORS.append(("xgb", MODELS["xgb"]))
-except ImportError:
-    pass
-
-try:
-    import lightgbm as lgbm
-    from config import Config
-    config = Config()
-
-    MODELS["lgbm"] = lgbm.LGBMClassifier(
-        n_jobs=-1,
-        verbose=-1,
-        device='gpu' if config.DEVICE == 'cuda' else 'cpu',
-        random_state=42,
-        class_weight='balanced',
-        **{
-            'num_leaves': 159, 'max_depth': 4, 
-            'learning_rate': 0.07201934773717454, 
-            'n_estimators': 332, 
-            'min_child_samples': 11, 
-            'subsample': 0.6724360662104916, 
-            'colsample_bytree': 0.9689043505892945, 
-            'reg_alpha': 2.7261162591155736, 
-            'reg_lambda': 5.16531384161136
-        }
-    )
-    _BASE_ESTIMATORS.append(("lgbm", MODELS["lgbm"]))
-except ImportError:
-    pass
-
-try:
-    import catboost
-    from config import Config
-    config = Config()
-
-    MODELS["catboost"] = catboost.CatBoostClassifier(
-        verbose=False,
-        task_type="GPU" if config.DEVICE == 'cuda' else 'CPU',
-        random_state=42,
-        auto_class_weights='Balanced',
-        **{
-            'depth': 9, 
-            'learning_rate': 0.022515921040338078, 
-            'iterations': 262, 
-            'l2_leaf_reg': 0.0002240008599075843, 
-            'bagging_temperature': 0.9243734060325552, 
-            'random_strength': 5.811210933306866
-        }
-    )
-    #_BASE_ESTIMATORS.append(("catboost", MODELS["catboost"]))
-except ImportError:
-    pass
-
-# =============================================================================
-# Ensemble Models (combine all available base models)
-# =============================================================================
-
-# Hard Voting: majority vote
-MODELS["ensemble_hard"] = VotingClassifier(
-    estimators=_BASE_ESTIMATORS.copy(),
-    voting='hard',
-    n_jobs=-1
-)
-
-# Soft Voting: average probabilities (usually better)
-MODELS["ensemble_soft"] = VotingClassifier(
-    estimators=_BASE_ESTIMATORS.copy(),
-    voting='soft',
-    n_jobs=-1
-)
 

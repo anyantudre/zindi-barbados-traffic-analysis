@@ -30,7 +30,13 @@ class TrafficCongestionModel:
         """
         self.config = config or Config()
         self.model_name = model_name
-        self.model = clone(MODELS.get(model_name, MODELS["random_forest"]))
+        # Use get_model to ensure proper device configuration
+        from .model_dispatcher import get_model
+        try:
+            self.model = get_model(model_name, device=self.config.DEVICE)
+        except (ImportError, ValueError):
+            # Fallback to legacy MODELS dict
+            self.model = clone(MODELS.get(model_name, MODELS["random_forest"]))
         self.label_encoder = LabelEncoder()
         self.is_fitted = False
         self.feature_names = None
@@ -87,15 +93,17 @@ class TrafficCongestionModel:
         skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
         self.cv_scores = []
 
-        if self.model_name == 'xgb':
-            sample_weight = compute_sample_weight('balanced', y_encoded)
-
         print(f"Training {self.model_name} with {n_splits}-fold Stratified CV...")
         for fold, (train_idx, val_idx) in enumerate(skf.split(X_feat, y_encoded)):
-            model_fold = clone(self.model)
+            # For XGBoost, create new instance instead of clone (clone doesn't work well with callable eval_metric)
             if self.model_name == 'xgb':
+                from .model_dispatcher import get_model
+                model_fold = get_model('xgb', device=self.config.DEVICE)
+                # Compute sample_weight only for training indices
+                sample_weight = compute_sample_weight('balanced', y_encoded[train_idx])
                 model_fold.fit(X_feat[train_idx], y_encoded[train_idx], sample_weight=sample_weight)
             else:
+                model_fold = clone(self.model)
                 model_fold.fit(X_feat[train_idx], y_encoded[train_idx])
             
             score = model_fold.score(X_feat[val_idx], y_encoded[val_idx])
@@ -105,7 +113,11 @@ class TrafficCongestionModel:
         print(f"  Mean CV: {np.mean(self.cv_scores):.4f} (+/- {np.std(self.cv_scores):.4f})")
         
         # Final fit on all data
-        self.model.fit(X_feat, y_encoded)
+        if self.model_name == 'xgb':
+            sample_weight = compute_sample_weight('balanced', y_encoded)
+            self.model.fit(X_feat, y_encoded, sample_weight=sample_weight)
+        else:
+            self.model.fit(X_feat, y_encoded)
         self.is_fitted = True
         return self
     
