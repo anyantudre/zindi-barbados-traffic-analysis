@@ -41,6 +41,14 @@ The dataset consists of video streams from four cameras positioned at different 
 - Four camera views: Unique perspectives of roundabout entrances/exits
 - Temporal alignment: All four cameras record the same time periods
 
+<div align="center">
+
+https://github.com/user-attachments/assets/5c04d5a6-1a06-403b-a785-2e3376761a24
+
+<em>Example: Heavy delay traffic congestion in the Norman Niles roundabout.</em>
+
+</div>
+
 
 ## Our Approach
 

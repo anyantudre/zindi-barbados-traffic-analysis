@@ -3,6 +3,7 @@
 This module contains functions for data visualization and plotting.
 """
 
+import os
 import subprocess
 import numpy as np
 import pandas as pd
@@ -41,6 +42,15 @@ class Visualizer:
             duration: Duration in seconds if trimming.
             width: Display width in pixels.
         """
+        # Validate video_path
+        if video_path is None or (isinstance(video_path, float) and pd.isna(video_path)):
+            raise ValueError(f"video_path is None or NaN. Please check that the video path exists in your dataframe.")
+        
+        video_path = str(video_path)
+        
+        if not os.path.exists(video_path):
+            raise FileNotFoundError(f"Video file not found: {video_path}")
+        
         output_path = "preview.mp4"
         
         # Build ffmpeg command
