@@ -107,14 +107,6 @@ class DataLoader:
         
         return train, test, sub
     
-    def load_features(self) -> pd.DataFrame:
-        """
-        Load precomputed features from CSV.
-        
-        Returns:
-            DataFrame with video features.
-        """
-        return pd.read_csv(self.config.FEATURES_CSV_PATH)
     
     def load_all_data(self) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         """

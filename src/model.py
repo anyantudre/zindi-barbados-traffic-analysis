@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import LabelEncoder
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import StratifiedKFold, GroupKFold, StratifiedGroupKFold
 from sklearn.metrics import classification_report, f1_score, accuracy_score
 from sklearn.base import clone
 from typing import Dict, List, Tuple, Optional
@@ -71,10 +71,11 @@ class TrafficCongestionModel:
         y: pd.Series,
         feature_cols: List[str] = None,
         n_splits: int = 5,
-        random_state: int = 42
+        random_state: int = 42,
+        groups: Optional[pd.Series] = None
     ) -> 'TrafficCongestionModel':
         """
-        Train with Stratified K-Fold cross-validation.
+        Train with cross-validation (GroupKFold if groups provided, else StratifiedKFold).
         
         Args:
             X: Features.
@@ -82,6 +83,7 @@ class TrafficCongestionModel:
             feature_cols: Feature column names.
             n_splits: Number of folds.
             random_state: Random seed for reproducibility.
+            groups: Group labels for GroupKFold (e.g., time_segment_id). If None, uses StratifiedKFold.
             
         Returns:
             self (trained on full data after CV)
@@ -90,11 +92,20 @@ class TrafficCongestionModel:
         y_encoded = self.label_encoder.fit_transform(y)
         X_feat = X[self.feature_names].values
         
-        skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+        # Use StratifiedGroupKFold if groups provided, else StratifiedKFold
+        if groups is not None:
+            cv = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+            cv_split = cv.split(X_feat, y_encoded, groups=groups)
+            cv_name = "StratifiedGroupKFold"
+        else:
+            cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+            cv_split = cv.split(X_feat, y_encoded)
+            cv_name = "StratifiedKFold"
+        
         self.cv_scores = []
 
-        print(f"Training {self.model_name} with {n_splits}-fold Stratified CV...")
-        for fold, (train_idx, val_idx) in enumerate(skf.split(X_feat, y_encoded)):
+        print(f"Training {self.model_name} with {n_splits}-fold {cv_name} CV...")
+        for fold, (train_idx, val_idx) in enumerate(cv_split):
             # For XGBoost, create new instance instead of clone (clone doesn't work well with callable eval_metric)
             if self.model_name == 'xgb':
                 from .model_dispatcher import get_model
@@ -106,11 +117,16 @@ class TrafficCongestionModel:
                 model_fold = clone(self.model)
                 model_fold.fit(X_feat[train_idx], y_encoded[train_idx])
             
-            score = model_fold.score(X_feat[val_idx], y_encoded[val_idx])
-            self.cv_scores.append(score)
-            print(f"  Fold {fold+1}: {score:.4f}")
+            # Use competition metric: 0.7*Macro-F1 + 0.3*Accuracy
+            y_val_pred = model_fold.predict(X_feat[val_idx])
+            fold_macro_f1 = f1_score(y_encoded[val_idx], y_val_pred, average='macro')
+            fold_accuracy = accuracy_score(y_encoded[val_idx], y_val_pred)
+            fold_score = 0.7 * fold_macro_f1 + 0.3 * fold_accuracy
+            
+            self.cv_scores.append(fold_score)
+            print(f"  Fold {fold+1}: Competition Score={fold_score:.4f} (F1={fold_macro_f1:.4f}, Acc={fold_accuracy:.4f})")
         
-        print(f"  Mean CV: {np.mean(self.cv_scores):.4f} (+/- {np.std(self.cv_scores):.4f})")
+        print(f"  Mean CV Competition Score: {np.mean(self.cv_scores):.4f} (+/- {np.std(self.cv_scores):.4f})")
         
         # Final fit on all data
         if self.model_name == 'xgb':

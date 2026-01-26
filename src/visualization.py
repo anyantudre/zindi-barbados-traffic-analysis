@@ -266,7 +266,8 @@ class Visualizer:
     def plot_feature_importance(
         importances: np.ndarray, 
         feature_names: List[str],
-        figsize: tuple = None
+        figsize: tuple = None,
+        model_name: str = "model"
     ) -> None:
         """
         Plot feature importance bar chart.
@@ -276,6 +277,7 @@ class Visualizer:
             feature_names: List of feature names.
             figsize: Optional figure size. If None, height is scaled to the
                      number of features to keep labels readable.
+            model_name: Model name shown in the plot title.
         """
         indices = np.argsort(importances)[::-1]
         
@@ -286,7 +288,7 @@ class Visualizer:
         
         plt.figure(figsize=figsize)
         sns.barplot(x=importances[indices], y=[feature_names[i] for i in indices])
-        plt.title("Feature Importance in RandomForest")
+        plt.title(f"Feature Importance ({model_name})")
         plt.xlabel("Importance")
         plt.ylabel("Feature")
         plt.show()

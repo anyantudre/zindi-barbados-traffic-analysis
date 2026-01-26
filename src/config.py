@@ -71,9 +71,9 @@ class Config:
     }
     
     # CSV file paths
-    TRAIN_CSV_PATH: str = "/kaggle/input/normanniles1-barbados-traffic/Train.csv"
-    TEST_CSV_PATH: str = "/kaggle/input/normanniles1-barbados-traffic/TestInputSegments.csv"
-    SAMPLE_SUBMISSION_PATH: str = "/kaggle/input/normanniles1-barbados-traffic/SampleSubmission.csv"
+    TRAIN_CSV_PATH: str = "data/Train.csv"
+    TEST_CSV_PATH: str = "data/TestInputSegments.csv"
+    SAMPLE_SUBMISSION_PATH: str = "data/SampleSubmission.csv"
     
     # Feature CSV paths (Kaggle datasets or local). Set to None to disable.
     SIMPLE_FEATURES_PATH: str = "/kaggle/input/simple-features-for-traffic-analysis/simple_features.csv"
@@ -85,7 +85,9 @@ class Config:
     YOLOFLOW_FEATURES_PATH: str = None  # e.g. "/kaggle/input/yoloflow-features-traffic/yoloflow_features.csv"
 
     # Column definitions - Temporal features (from preprocessing)
-    TEMPORAL_FEATURES: list = ['signaling', 'day_week', 'hour']
+    # Includes cyclical encoding and peak indicators for better temporal patterns
+    TEMPORAL_FEATURES: list = ['signaling', 'day_week', 'hour', 'minute', 'hour_sin', 'hour_cos', 
+                               'day_week_sin', 'day_week_cos', 'is_peak_am', 'is_peak_pm', 'is_peak']
     
     # Simple video features
     SIMPLE_FEATURES: list = [
@@ -139,7 +141,7 @@ class Config:
     # Default features (updated dynamically in pipeline.setup())
     FEATURES_COLS: list = TEMPORAL_FEATURES + SIMPLE_FEATURES
     
-    LABELS_COLS: list = ['congestion_enter_rating', 'congestion_exit_rating']
+    LABELS_COLS: list = ['congestion_enter_rating']  # Exit ratings removed per challenge update
     
     ID_COLS: list = ['view_label', 'time_segment_id']
     
