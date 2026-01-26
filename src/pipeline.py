@@ -85,8 +85,11 @@ class TrainingPipeline:
 
         # Store the dynamic feature columns for use in training/evaluation
         # Dynamically determine feature columns from the training data
+        # Exclude metadata columns but keep time_segment_id for grouping
+        exclude_cols = ['ID', 'cycle_phase', 'ID_type', 'video_path', 'congestion_rating', 
+                        'video_time', 'date', 'Date', 'view_label']
         feature_cols = [col for col in self.training_df.columns
-                       if col not in self.config.ID_COLS + ['ID', 'cycle_phase', 'ID_type', 'video_path', 'congestion_rating']]
+                       if col not in exclude_cols]
         self.dynamic_feature_cols = [col for col in feature_cols if col in self.training_df.columns]
 
         print(f"Training: {len(self.training_df)}, Validation: {len(self.validation_df)}, Testing: {len(self.testing_df)}")
@@ -135,7 +138,9 @@ class TrainingPipeline:
             self.model = TrafficCongestionModel(self.config, model_name=model_name)
 
             if use_cv:
-                self.model.fit_cv(X_train, y_train, self.dynamic_feature_cols, n_splits)
+                # Use GroupKFold with time_segment_id to prevent data leakage across views
+                groups = self.training_df['time_segment_id'] if 'time_segment_id' in self.training_df.columns else None
+                self.model.fit_cv(X_train, y_train, self.dynamic_feature_cols, n_splits, groups=groups)
             else:
                 print(f"Training {model_name}...")
                 self.model.fit(X_train, y_train, self.dynamic_feature_cols)
@@ -316,8 +321,10 @@ class InferencePipeline:
 
         # Determine dynamic feature columns from the test data
         if hasattr(self, 'testing_df') and self.testing_df is not None:
+            exclude_cols = ['ID', 'cycle_phase', 'ID_type', 'video_path', 'congestion_rating', 
+                           'video_time', 'date', 'Date', 'view_label']
             feature_cols = [col for col in self.testing_df.columns
-                           if col not in self.config.ID_COLS + ['ID', 'cycle_phase', 'ID_type', 'video_path', 'congestion_rating']]
+                           if col not in exclude_cols]
             self.dynamic_feature_cols = [col for col in feature_cols if col in self.testing_df.columns]
             print(f"Using {len(self.dynamic_feature_cols)} feature columns: {self.dynamic_feature_cols}")
 
